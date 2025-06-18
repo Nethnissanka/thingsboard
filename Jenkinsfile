@@ -1,13 +1,12 @@
 pipeline {
     agent any
     
-    tools {
-        maven 'Maven-3.x'
-        jdk 'JDK-11'
-    }
-    
     environment {
-        MAVEN_OPTS = '-Xmx2048m -XX:MaxPermSize=512m'
+        MAVEN_OPTS = '-Xmx2048m'
+        // Use system tools - Rocky Linux paths
+        JAVA_HOME = '/usr/lib/jvm/java-17-openjdk-17.0.15.0.6-2.el9.x86_64'
+        M2_HOME = '/usr/share/maven'
+        PATH = "${env.PATH}:/usr/bin"
     }
     
     stages {
@@ -24,6 +23,8 @@ pipeline {
                 echo "Build number: ${env.BUILD_NUMBER}"
                 sh 'java -version'
                 sh 'mvn -version'
+                sh 'echo "JAVA_HOME: $JAVA_HOME"'
+                sh 'echo "PATH: $PATH"'
             }
         }
         
@@ -48,8 +49,12 @@ pipeline {
             }
             post {
                 always {
-                    // Publish test results
-                    publishTestResults testResultsPattern: 'target/surefire-reports/*.xml'
+                    // Publish test results if they exist
+                    script {
+                        if (fileExists('target/surefire-reports/*.xml')) {
+                            publishTestResults testResultsPattern: 'target/surefire-reports/*.xml'
+                        }
+                    }
                 }
             }
         }
@@ -64,7 +69,12 @@ pipeline {
         stage('Archive Artifacts') {
             steps {
                 echo 'Archiving build artifacts...'
-                archiveArtifacts artifacts: '**/target/*.jar', allowEmptyArchive: true
+                script {
+                    // Archive artifacts if they exist
+                    if (fileExists('**/target/*.jar')) {
+                        archiveArtifacts artifacts: '**/target/*.jar', allowEmptyArchive: true
+                    }
+                }
             }
         }
     }
