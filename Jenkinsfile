@@ -36,7 +36,7 @@ pipeline {
         stage('Fast Package Build') {
             steps {
                 echo 'Building packages only - skipping tests and non-essential modules...'
-                timeout(time: 15, unit: 'MINUTES') {
+                timeout(time: 60, unit: 'MINUTES') {
                     sh '''
                         # Fast package build with optimizations
                         mvn package \
