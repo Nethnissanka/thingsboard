@@ -16,7 +16,7 @@ pipeline {
     parameters {
         choice(
             name: 'RELEASE_BRANCH',
-            choices: ['main', 'release/*'],
+            choices: ['master', 'release/*'],
             description: 'Select release branch for production build'
         )
         string(
@@ -76,7 +76,7 @@ pipeline {
                 echo '🔐 Running production security validations...'
                 script {
                     // Ensure we're building from approved branches/tags only
-                    def allowedBranches = ['main', 'master']
+                    def allowedBranches = ['master', 'main']
                     def currentBranch = params.RELEASE_BRANCH
                     
                     if (params.VERSION_TAG) {
@@ -84,7 +84,7 @@ pipeline {
                     } else if (currentBranch.startsWith('release/') || allowedBranches.contains(currentBranch)) {
                         echo "✅ Building from approved branch: ${currentBranch}"
                     } else {
-                        error("❌ Production builds only allowed from main, master, or release/* branches")
+                        error("❌ Production builds only allowed from master, main,or release/* branches")
                     }
                 }
             }
