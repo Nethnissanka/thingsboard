@@ -2,110 +2,75 @@ pipeline {
     agent any
     
     environment {
-        MAVEN_OPTS = '-Xmx3072m -XX:+UseG1GC'  // More memory for production
+        MAVEN_OPTS = '-Xmx2048m -XX:+UseG1GC'
         JAVA_HOME = '/usr/lib/jvm/java-17-openjdk-17.0.15.0.6-2.el9.x86_64'
         M2_HOME = '/usr/share/maven'
         PATH = "${env.PATH}:/usr/bin"
         
-        // Production Environment specific variables
-        ENV_NAME = 'PRODUCTION'
-        DEPLOY_TARGET = 'prod-server'
-        BUILD_PROFILE = 'prod'
+        // QA Environment specific variables
+        ENV_NAME = 'QA'
+        DEPLOY_TARGET = 'qa-server'
+        BUILD_PROFILE = 'qa'
     }
     
     parameters {
         choice(
-            name: 'RELEASE_BRANCH',
-            choices: ['master', 'release/*'],
-            description: 'Select release branch for production build'
-        )
-        string(
-            name: 'VERSION_TAG',
-            defaultValue: '',
-            description: 'Version tag for this production release (e.g., v1.2.3)'
+            name: 'BRANCH_TO_BUILD',
+            choices: ['develop', 'feature/*', 'main'],
+            description: 'Select branch to build for QA'
         )
         booleanParam(
-            name: 'CREATE_BACKUP',
+            name: 'DEPLOY_TO_QA',
             defaultValue: true,
-            description: 'Create backup before production deployment?'
-        )
-        booleanParam(
-            name: 'DEPLOY_TO_PROD',
-            defaultValue: false,
-            description: 'Deploy to production? (Requires approval)'
+            description: 'Deploy packages to QA environment after build?'
         )
     }
     
     stages {
-        stage('Production Checkout') {
+        stage('QA Checkout') {
             steps {
-                echo "🔒 Checking out source code for PRODUCTION build..."
+                echo "🔄 Checking out source code for QA build..."
                 script {
-                    if (params.VERSION_TAG) {
-                        // Checkout specific tag if provided
-                        checkout([$class: 'GitSCM',
-                                branches: [[name: "refs/tags/${params.VERSION_TAG}"]],
-                                userRemoteConfigs: scm.userRemoteConfigs])
+                    if (params.BRANCH_TO_BUILD.startsWith('feature/')) {
+                        // For feature branches, let user specify exact branch name
+                        checkout scm
                     } else {
-                        // Checkout selected branch
                         checkout([$class: 'GitSCM',
-                                branches: [[name: "*/${params.RELEASE_BRANCH}"]],
+                                branches: [[name: "*/${params.BRANCH_TO_BUILD}"]],
                                 userRemoteConfigs: scm.userRemoteConfigs])
                     }
                 }
             }
         }
         
-        stage('Production Build Info') {
+        stage('QA Build Info') {
             steps {
-                echo "🏭 PRODUCTION Build Information:"
+                echo "🏷️  QA Build Information:"
                 echo "Environment: ${ENV_NAME}"
-                echo "Branch/Tag: ${params.VERSION_TAG ?: params.RELEASE_BRANCH}"
+                echo "Branch: ${params.BRANCH_TO_BUILD}"
                 echo "Build number: ${env.BUILD_NUMBER}"
-                echo "Version: ${params.VERSION_TAG}"
-                echo "Create backup: ${params.CREATE_BACKUP}"
-                echo "Deploy to prod: ${params.DEPLOY_TO_PROD}"
+                echo "Deploy to QA: ${params.DEPLOY_TO_QA}"
                 sh 'java -version'
                 sh 'mvn -version'
-                sh 'git log --oneline -5'  // Show recent commits
             }
         }
         
-        stage('Production Security Check') {
+        stage('QA Clean & Prepare') {
             steps {
-                echo '🔐 Running production security validations...'
-                script {
-                    // Ensure we're building from approved branches/tags only
-                    def allowedBranches = ['master', 'main']
-                    def currentBranch = params.RELEASE_BRANCH
-                    
-                    if (params.VERSION_TAG) {
-                        echo "✅ Building from version tag: ${params.VERSION_TAG}"
-                    } else if (currentBranch.startsWith('release/') || allowedBranches.contains(currentBranch)) {
-                        echo "✅ Building from approved branch: ${currentBranch}"
-                    } else {
-                        error("❌ Production builds only allowed from master, main,or release/* branches")
-                    }
-                }
-            }
-        }
-        
-        stage('Production Clean & Prepare') {
-            steps {
-                echo '🧹 Cleaning workspace for production build...'
+                echo '🧹 Cleaning workspace for QA build...'
                 sh 'mvn clean -q -T 2C'
             }
         }
         
-        stage('Production Package Build') {
+        stage('QA Package Build') {
             steps {
-                echo '📦 Building PRODUCTION packages - optimized and secure...'
-                timeout(time: 60, unit: 'MINUTES') {
+                echo '📦 Building QA packages - optimized for testing...'
+                timeout(time: 45, unit: 'MINUTES') {
                     sh '''
-                        echo "=== PRODUCTION Package Build Started ==="
-                        echo "Building with production profile and full validations..."
+                        echo "=== QA Package Build Started ==="
+                        echo "Building with QA profile and optimizations..."
                         
-                        # Production build with enhanced security and validations
+                        # QA build with some additional validations but skip heavy tests
                         mvn package \
                             -P${BUILD_PROFILE} \
                             -DskipTests \
@@ -113,12 +78,10 @@ pipeline {
                             -Dmaven.javadoc.skip=true \
                             -Dmaven.source.skip=true \
                             -Dcheckstyle.skip=false \
-                            -Dspotbugs.skip=false \
-                            -Dpmd.skip=false \
-                            -Dfindbugs.skip=false \
+                            -Dspotbugs.skip=true \
+                            -Dpmd.skip=true \
+                            -Dfindbugs.skip=true \
                             -Denforcer.skip=false \
-                            -Dmaven.compiler.optimize=true \
-                            -Dmaven.compiler.debug=false \
                             -T 2C \
                             -X | grep -E "(Installing|Building|Packaging|reactor:|SUCCESS|ERROR|WARNING)" || \
                         mvn package \
@@ -128,225 +91,128 @@ pipeline {
                             -Dmaven.javadoc.skip=true \
                             -Dmaven.source.skip=true \
                             -Dcheckstyle.skip=false \
-                            -Dspotbugs.skip=false \
                             -Denforcer.skip=false \
-                            -Dmaven.compiler.optimize=true \
                             -T 2C
                         
-                        echo "=== PRODUCTION Build Process Completed ==="
-                        echo "Production packages created:"
+                        echo "=== QA Build Process Completed ==="
+                        echo "QA Packages created:"
                         find . -name "*.jar" -newer pom.xml 2>/dev/null | head -15
                     '''
                 }
             }
         }
         
-        stage('Production Package Validation') {
+        stage('QA Package Validation') {
             steps {
-                echo '✅ Comprehensive production package validation...'
+                echo '✅ Validating QA packages...'
                 sh '''
-                    echo "=== Production Package Validation ==="
+                    echo "Validating main application packages..."
                     
                     # Check if main packages exist
                     MAIN_JARS=$(find . -name "thingsboard*.jar" -o -name "application*.jar" | grep -v test | wc -l)
                     echo "Found $MAIN_JARS main application packages"
                     
                     if [ "$MAIN_JARS" -eq 0 ]; then
-                        echo "❌ CRITICAL ERROR: No main application packages found!"
+                        echo "❌ ERROR: No main application packages found!"
                         exit 1
                     fi
                     
-                    # Comprehensive JAR validation for production
-                    for jar in $(find . -name "thingsboard*.jar" -o -name "application*.jar" | grep -v test); do
-                        echo "Validating production package: $jar"
-                        
-                        # Check JAR structure
+                    # Basic JAR validation
+                    for jar in $(find . -name "thingsboard*.jar" -o -name "application*.jar" | grep -v test | head -5); do
+                        echo "Validating: $jar"
                         if jar tf "$jar" > /dev/null 2>&1; then
                             echo "  ✅ Valid JAR structure"
                         else
-                            echo "  ❌ CRITICAL: Invalid JAR structure: $jar"
+                            echo "  ❌ Invalid JAR: $jar"
                             exit 1
                         fi
-                        
-                        # Check JAR size (should not be empty)
-                        SIZE=$(stat -f%z "$jar" 2>/dev/null || stat -c%s "$jar" 2>/dev/null || echo "0")
-                        if [ "$SIZE" -gt 1000000 ]; then  # > 1MB
-                            echo "  ✅ Package size OK: ${SIZE} bytes"
-                        else
-                            echo "  ⚠️  WARNING: Package seems small: ${SIZE} bytes"
-                        fi
-                        
-                        # Check for main class (basic validation)
-                        if jar tf "$jar" | grep -q "MANIFEST.MF"; then
-                            echo "  ✅ Manifest present"
-                        else
-                            echo "  ⚠️  WARNING: No manifest found"
-                        fi
                     done
-                    
-                    echo "✅ Production package validation completed"
                 '''
             }
         }
         
-        stage('Create Production Backup') {
-            when {
-                expression { params.CREATE_BACKUP == true }
-            }
+        stage('Archive QA Packages') {
             steps {
-                echo '💾 Creating production backup...'
-                sh '''
-                    BACKUP_DIR="production-backup-${BUILD_NUMBER}-$(date +%Y%m%d_%H%M%S)"
-                    mkdir -p "$BACKUP_DIR"
-                    
-                    # Copy current production packages for backup
-                    find . -name "*.jar" -newer pom.xml -exec cp {} "$BACKUP_DIR/" \\;
-                    
-                    # Create backup archive
-                    tar -czf "${BACKUP_DIR}.tar.gz" "$BACKUP_DIR"
-                    rm -rf "$BACKUP_DIR"
-                    
-                    echo "✅ Production backup created: ${BACKUP_DIR}.tar.gz"
-                    ls -lh "${BACKUP_DIR}.tar.gz"
-                '''
-                
-                archiveArtifacts artifacts: 'production-backup-*.tar.gz', allowEmptyArchive: true
-            }
-        }
-        
-        stage('Archive Production Packages') {
-            steps {
-                echo '📁 Archiving production packages...'
+                echo '📁 Archiving QA packages...'
                 script {
-                    def prodJars = sh(
-                        script: "find . -name '*.jar' | grep -v test",
+                    def qaJars = sh(
+                        script: "find . -name '*.jar' | grep -v test | head -20",
                         returnStdout: true
                     ).trim()
                     
-                    if (prodJars) {
-                        echo "Archiving production packages"
+                    if (qaJars) {
+                        echo "Archiving QA packages: ${qaJars}"
                         archiveArtifacts artifacts: '**/target/*.jar', 
                                        excludes: '**/target/*-tests.jar,**/target/*-sources.jar',
                                        allowEmptyArchive: true,
                                        fingerprint: true
-                        
-                        // Also create a release package
-                        sh '''
-                            RELEASE_DIR="thingsboard-release-${BUILD_NUMBER}"
-                            mkdir -p "$RELEASE_DIR"
-                            find . -name "thingsboard*.jar" -o -name "application*.jar" | grep -v test | xargs -I {} cp {} "$RELEASE_DIR/"
-                            tar -czf "${RELEASE_DIR}.tar.gz" "$RELEASE_DIR"
-                            rm -rf "$RELEASE_DIR"
-                        '''
-                        
-                        archiveArtifacts artifacts: 'thingsboard-release-*.tar.gz', allowEmptyArchive: true
                     }
                 }
             }
         }
         
-        stage('Production Deployment Approval') {
+        stage('Deploy to QA') {
             when {
-                expression { params.DEPLOY_TO_PROD == true }
+                expression { params.DEPLOY_TO_QA == true }
             }
             steps {
+                echo '🚀 Deploying to QA environment...'
                 script {
-                    def approval = input(
-                        message: '🚨 Deploy to PRODUCTION environment?',
-                        parameters: [
-                            choice(name: 'DEPLOY_DECISION', 
-                                   choices: ['ABORT', 'DEPLOY'], 
-                                   description: 'Confirm production deployment')
-                        ]
-                    )
-                    
-                    if (approval == 'ABORT') {
-                        error('Production deployment aborted by user')
-                    }
-                }
-            }
-        }
-        
-        stage('Deploy to Production') {
-            when {
-                expression { params.DEPLOY_TO_PROD == true }
-            }
-            steps {
-                echo '🚀 Deploying to PRODUCTION environment...'
-                script {
+                    // Add your QA deployment logic here
                     sh '''
-                        echo "=== PRODUCTION DEPLOYMENT ==="
+                        echo "Preparing QA deployment..."
                         echo "Target: ${DEPLOY_TARGET}"
-                        echo "Version: ${VERSION_TAG}"
-                        echo "Build: ${BUILD_NUMBER}"
                         
-                        # Add your production deployment logic here
-                        # Example commands (customize as needed):
-                        # scp thingsboard-release-*.tar.gz prod-server:/opt/thingsboard/releases/
-                        # ssh prod-server "cd /opt/thingsboard && ./deploy-release.sh ${BUILD_NUMBER}"
+                        # Example deployment commands (customize as needed)
+                        # scp target/*.jar qa-server:/opt/thingsboard/
+                        # ssh qa-server "sudo systemctl restart thingsboard"
                         
-                        echo "✅ PRODUCTION deployment completed successfully"
+                        echo "✅ QA deployment completed"
                     '''
                 }
             }
         }
         
-        stage('Production Build Report') {
+        stage('QA Build Report') {
             steps {
-                echo '📊 Generating production build report...'
+                echo '📊 Generating QA build report...'
                 sh '''
-                    echo "=== ThingsBoard PRODUCTION Build Report ===" > production-build-report.txt
-                    echo "Environment: PRODUCTION" >> production-build-report.txt
-                    echo "Build: ${BUILD_NUMBER}" >> production-build-report.txt
-                    echo "Branch/Tag: ${VERSION_TAG:-$RELEASE_BRANCH}" >> production-build-report.txt
-                    echo "Build Date: $(date)" >> production-build-report.txt
-                    echo "Backup Created: ${CREATE_BACKUP}" >> production-build-report.txt
-                    echo "Deployed: ${DEPLOY_TO_PROD}" >> production-build-report.txt
-                    echo "" >> production-build-report.txt
+                    echo "=== ThingsBoard QA Build Report ===" > qa-build-report.txt
+                    echo "Environment: QA" >> qa-build-report.txt
+                    echo "Build: ${BUILD_NUMBER} | Branch: ${BRANCH_TO_BUILD}" >> qa-build-report.txt
+                    echo "Build Date: $(date)" >> qa-build-report.txt
+                    echo "Deployed to QA: ${DEPLOY_TO_QA}" >> qa-build-report.txt
+                    echo "" >> qa-build-report.txt
                     
-                    echo "=== Git Information ===" >> production-build-report.txt
-                    git log --oneline -5 >> production-build-report.txt
-                    echo "" >> production-build-report.txt
+                    echo "=== QA Packages Created ===" >> qa-build-report.txt
+                    find . -name "*.jar" -newer pom.xml -exec ls -lh {} \\; >> qa-build-report.txt 2>/dev/null
+                    echo "" >> qa-build-report.txt
                     
-                    echo "=== Production Packages Created ===" >> production-build-report.txt
-                    find . -name "*.jar" -newer pom.xml -exec ls -lh {} \\; >> production-build-report.txt 2>/dev/null
-                    echo "" >> production-build-report.txt
-                    
-                    echo "=== Build Statistics ===" >> production-build-report.txt
-                    echo "Total packages: $(find . -name "*.jar" -newer pom.xml | wc -l)" >> production-build-report.txt
-                    echo "Build completed: $(date)" >> production-build-report.txt
+                    echo "=== Build Statistics ===" >> qa-build-report.txt
+                    echo "Total packages: $(find . -name "*.jar" -newer pom.xml | wc -l)" >> qa-build-report.txt
+                    echo "Build completed: $(date)" >> qa-build-report.txt
                 '''
                 
-                archiveArtifacts artifacts: 'production-build-report.txt', allowEmptyArchive: true
+                archiveArtifacts artifacts: 'qa-build-report.txt', allowEmptyArchive: true
             }
         }
     }
     
     post {
         always {
-            echo '🏁 Production pipeline completed!'
+            echo '🏁 QA Pipeline completed!'
             sh 'rm -rf target/*/target || true'
         }
         success {
-            echo '✅ Production build succeeded!'
+            echo '✅ QA build succeeded!'
             script {
-                def version = params.VERSION_TAG ?: params.RELEASE_BRANCH
-                currentBuild.description = "✅ Production packages built successfully - ${version}"
+                currentBuild.description = "✅ QA packages built successfully from ${params.BRANCH_TO_BUILD}"
             }
         }
         failure {
-            echo '❌ Production build failed!'
+            echo '❌ QA build failed!'
             script {
-                currentBuild.description = "❌ PRODUCTION build failed at ${env.STAGE_NAME}"
-                
-                // Send critical failure notification for production
-                sh '''
-                    echo "CRITICAL: Production build failure" > prod-failure.txt
-                    echo "Stage: ${STAGE_NAME}" >> prod-failure.txt
-                    echo "Build: ${BUILD_NUMBER}" >> prod-failure.txt
-                    echo "Time: $(date)" >> prod-failure.txt
-                '''
-                archiveArtifacts artifacts: 'prod-failure.txt', allowEmptyArchive: true
+                currentBuild.description = "❌ QA build failed at ${env.STAGE_NAME}"
             }
         }
     }
