@@ -16,7 +16,7 @@ pipeline {
     parameters {
         choice(
             name: 'BRANCH_TO_BUILD',
-            choices: ['develop', 'feature/*', 'main'],
+            choices: ['feature/*', 'master'],  
             description: 'Select branch to build for QA'
         )
         booleanParam(
