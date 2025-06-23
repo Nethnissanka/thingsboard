@@ -181,7 +181,24 @@ pipeline {
                 sh 'git log --oneline -3'
             }
         }
-       
+        
+        stage('Production Security Check') {
+            steps {
+                echo '🔐 Running production security validations...'
+                script {
+                    def allowedBranches = ['master','release/*', 'main']
+                    def currentBranch = params.RELEASE_BRANCH
+                    
+                    if (params.VERSION_TAG) {
+                        echo "✅ Building from version tag: ${params.VERSION_TAG}"
+                    } else if (currentBranch.startsWith('release/') || allowedBranches.contains(currentBranch)) {
+                        echo "✅ Building from approved branch: ${currentBranch}"
+                    } else {
+                        error("❌ Production builds only allowed from master, main, or release/* branches")
+                    }
+                }
+            }
+        }
         
         stage('Production Clean & Prepare') {
             steps {
