@@ -186,15 +186,15 @@ pipeline {
             steps {
                 echo '🔐 Running production security validations...'
                 script {
-                    def allowedBranches = ['master','release/*', 'main']
+                    def allowedBranches = ['master','feature/*', 'main']
                     def currentBranch = params.RELEASE_BRANCH
                     
                     if (params.VERSION_TAG) {
                         echo "✅ Building from version tag: ${params.VERSION_TAG}"
-                    } else if (currentBranch.startsWith('release/') || allowedBranches.contains(currentBranch)) {
+                    } else if (currentBranch.startsWith('feature/') || allowedBranches.contains(currentBranch)) {
                         echo "✅ Building from approved branch: ${currentBranch}"
                     } else {
-                        error("❌ Production builds only allowed from master, main, or release/* branches")
+                        error("❌ Production builds only allowed from master, main, or feature/* branches")
                     }
                 }
             }
