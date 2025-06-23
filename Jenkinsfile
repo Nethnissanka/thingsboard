@@ -174,6 +174,87 @@ pipeline {
             }
         }
         
+        stage('Check Dependencies') {
+            steps {
+                echo 'Checking if common dependencies need to be rebuilt...'
+                script {
+                    sh '''
+                        echo "=== Checking Changed Modules for Dependencies ==="
+                        
+                        # Check if any common modules are in the changed list
+                        COMMON_MODULES="common dao transport rule-engine-api"
+                        NEEDS_COMMON_BUILD="false"
+                        
+                        for common_module in $COMMON_MODULES; do
+                            if echo "$CHANGED_MODULES" | grep -q "$common_module"; then
+                                echo "Common module changed: $common_module"
+                                NEEDS_COMMON_BUILD="true"
+                                break
+                            fi
+                        done
+                        
+                        # Store the result for next stage
+                        echo "$NEEDS_COMMON_BUILD" > needs_common_build.txt
+                        
+                        if [ "$NEEDS_COMMON_BUILD" = "true" ]; then
+                            echo "✓ Common modules need rebuilding"
+                        else
+                            echo "✓ Common modules unchanged - using existing builds"
+                        fi
+                    '''
+                }
+            }
+        }
+        
+        stage('Build Common Dependencies') {
+            when {
+                expression {
+                    def needsCommonBuild = readFile('needs_common_build.txt').trim()
+                    return needsCommonBuild == 'true'
+                }
+            }
+            steps {
+                echo 'Building changed common modules only...'
+                timeout(time: 20, unit: 'MINUTES') {
+                    sh '''
+                        echo "=== Building Only Changed Common Modules ==="
+                        
+                        COMMON_MODULES="common dao transport rule-engine-api"
+                        CHANGED_COMMON=""
+                        
+                        # Find which common modules actually changed
+                        for common_module in $COMMON_MODULES; do
+                            if echo "$CHANGED_MODULES" | grep -q "$common_module"; then
+                                if [ -d "$common_module" ] && [ -f "$common_module/pom.xml" ]; then
+                                    CHANGED_COMMON="$CHANGED_COMMON -pl $common_module"
+                                    echo "Will rebuild common module: $common_module"
+                                fi
+                            fi
+                        done
+                        
+                        # Build only the changed common modules
+                        if [ -n "$CHANGED_COMMON" ]; then
+                            echo "Installing changed common modules: $CHANGED_COMMON"
+                            mvn clean install \
+                                $CHANGED_COMMON \
+                                -DskipTests \
+                                -Dmaven.test.skip=true \
+                                -Dmaven.javadoc.skip=true \
+                                -Dmaven.source.skip=true \
+                                -Dcheckstyle.skip=true \
+                                -Dspotbugs.skip=true \
+                                -Dpmd.skip=true \
+                                -Dfindbugs.skip=true \
+                                -Denforcer.skip=true \
+                                -T 2C
+                        fi
+                        
+                        echo "=== Changed Common Dependencies Built ==="
+                    '''
+                }
+            }
+        }
+        
         stage('Clean & Prepare') {
             steps {
                 echo 'Cleaning previous builds...'
@@ -197,29 +278,34 @@ pipeline {
         
         stage('Build Changed Modules') {
             when {
-                expression { env.CHANGED_MODULES != '' }
+                expression { env.CHANGED_MODULES != '' && env.CHANGED_MODULES != null }
             }
             steps {
-                echo 'Building only changed modules...'
+                echo 'Building ONLY the changed modules...'
                 timeout(time: 45, unit: 'MINUTES') {
                     sh '''
-                        echo "=== Building Changed Modules ==="
+                        echo "=== Building ONLY Changed Modules ==="
+                        echo "Changed modules: $CHANGED_MODULES"
                         
-                        # Create module list for Maven reactor
+                        # Create module list for Maven reactor - ONLY changed modules
                         MODULE_LIST=""
+                        VALID_MODULES=""
+                        
                         for module in $(echo $CHANGED_MODULES | tr ',' ' '); do
                             if [ -d "$module" ] && [ -f "$module/pom.xml" ]; then
                                 MODULE_LIST="$MODULE_LIST -pl $module"
+                                VALID_MODULES="$VALID_MODULES $module"
+                                echo "Will build: $module"
                             fi
                         done
                         
-                        echo "Maven module list: $MODULE_LIST"
-                        
                         if [ -n "$MODULE_LIST" ]; then
-                            # Build changed modules with dependencies
-                            mvn compile package \
+                            echo "Building modules: $MODULE_LIST"
+                            
+                            # Build ONLY the changed modules (no -am flag)
+                            # This assumes dependencies are already built and available
+                            mvn package \
                                 $MODULE_LIST \
-                                -am \
                                 -DskipTests \
                                 -Dmaven.test.skip=true \
                                 -Dmaven.javadoc.skip=true \
@@ -229,14 +315,36 @@ pipeline {
                                 -Dpmd.skip=true \
                                 -Dfindbugs.skip=true \
                                 -Denforcer.skip=true \
-                                -T 2C \
-                                -q
+                                -T 2C
+                                
+                            # Verify build results
+                            echo "=== Verifying Build Results ==="
+                            TOTAL_JARS=0
+                            for module in $VALID_MODULES; do
+                                if [ -d "$module/target" ]; then
+                                    JAR_COUNT=$(find "$module/target" -name "*.jar" -not -name "*-tests.jar" | wc -l)
+                                    echo "Module $module: $JAR_COUNT JAR files created"
+                                    TOTAL_JARS=$((TOTAL_JARS + JAR_COUNT))
+                                    
+                                    # List the actual JARs created
+                                    find "$module/target" -name "*.jar" -not -name "*-tests.jar" -exec basename {} \\;
+                                else
+                                    echo "Warning: No target directory for module $module"
+                                fi
+                            done
+                            
+                            echo "Total JARs created: $TOTAL_JARS"
+                            
+                            if [ $TOTAL_JARS -eq 0 ]; then
+                                echo "ERROR: No JAR files were created!"
+                                exit 1
+                            fi
                         else
                             echo "No valid modules to build"
                             exit 1
                         fi
                         
-                        echo "=== Module Build Completed ==="
+                        echo "=== Selective Module Build Completed ==="
                     '''
                 }
             }
