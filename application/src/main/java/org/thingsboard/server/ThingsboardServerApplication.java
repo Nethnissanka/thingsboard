@@ -13,6 +13,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
+
+//new comment
 package org.thingsboard.server;
 
 import lombok.extern.slf4j.Slf4j;
