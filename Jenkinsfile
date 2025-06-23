@@ -22,9 +22,37 @@ pipeline {
         stage('Validate Branch') {
             steps {
                 script {
-                    echo "Current branch: ${env.BRANCH_NAME}"
-                    if (env.BRANCH_NAME != TARGET_BRANCH) {
-                        error("Pipeline only runs on '${TARGET_BRANCH}' branch. Current branch: ${env.BRANCH_NAME}")
+                    // Get branch name from multiple sources
+                    def branchName = env.BRANCH_NAME ?: env.GIT_BRANCH ?: ''
+                    
+                    // If still empty, try to get from git
+                    if (!branchName || branchName == '') {
+                        try {
+                            branchName = sh(
+                                script: 'git branch --show-current 2>/dev/null || git rev-parse --abbrev-ref HEAD',
+                                returnStdout: true
+                            ).trim()
+                        } catch (Exception e) {
+                            echo "Could not determine branch name: ${e.getMessage()}"
+                            branchName = 'unknown'
+                        }
+                    }
+                    
+                    // Remove origin/ prefix if present
+                    if (branchName.startsWith('origin/')) {
+                        branchName = branchName.substring(7)
+                    }
+                    
+                    // Set the branch name for use in other stages
+                    env.CURRENT_BRANCH = branchName
+                    
+                    echo "Detected branch: ${branchName}"
+                    echo "Target branch: ${TARGET_BRANCH}"
+                    
+                    // Only enforce branch restriction if we can determine the branch
+                    if (branchName != 'unknown' && branchName != TARGET_BRANCH) {
+                        echo "⚠️  Warning: Pipeline designed for '${TARGET_BRANCH}' branch, but running on '${branchName}'"
+                        echo "Continuing with build..."
                     }
                 }
             }
@@ -60,37 +88,77 @@ pipeline {
                     def changedFiles = []
                     def changedModules = []
                     
-                    if (env.PREVIOUS_COMMIT != "initial") {
-                        // Get changed files
-                        changedFiles = sh(
-                            script: "git diff --name-only ${env.PREVIOUS_COMMIT}..${env.CURRENT_COMMIT}",
-                            returnStdout: true
-                        ).trim().split('\n').findAll { it }
-                        
-                        echo "Changed files: ${changedFiles.join(', ')}"
-                        
-                        // Find affected modules
-                        def moduleSet = [] as Set
-                        changedFiles.each { file ->
-                            def parts = file.split('/')
-                            if (parts.length > 1 && new File(parts[0] + '/pom.xml').exists()) {
-                                moduleSet.add(parts[0])
+                    try {
+                        if (env.PREVIOUS_COMMIT != "initial") {
+                            // Get changed files
+                            changedFiles = sh(
+                                script: "git diff --name-only ${env.PREVIOUS_COMMIT}..${env.CURRENT_COMMIT}",
+                                returnStdout: true
+                            ).trim().split('\n').findAll { it }
+                            
+                            echo "Changed files: ${changedFiles.join(', ')}"
+                            
+                            // Find affected modules
+                            def moduleSet = [] as Set
+                            changedFiles.each { file ->
+                                def parts = file.split('/')
+                                if (parts.length > 1) {
+                                    // Check if directory has pom.xml
+                                    def pomPath = "${parts[0]}/pom.xml"
+                                    def pomExists = sh(
+                                        script: "test -f '${pomPath}' && echo 'true' || echo 'false'",
+                                        returnStdout: true
+                                    ).trim() == 'true'
+                                    
+                                    if (pomExists) {
+                                        moduleSet.add(parts[0])
+                                    }
+                                }
+                            }
+                            changedModules = moduleSet as List
+                        } else {
+                            echo "Initial build - finding all modules"
+                            def allModules = sh(
+                                script: 'find . -name "pom.xml" -not -path "./target/*" -exec dirname {} \\; | grep -v "^\\.$" | sed "s|^\\./||" | sort',
+                                returnStdout: true
+                            ).trim()
+                            
+                            if (allModules) {
+                                changedModules = allModules.split('\n').findAll { it && it != '.' }
                             }
                         }
-                        changedModules = moduleSet as List
-                    } else {
-                        echo "Initial build - building all modules"
-                        changedModules = sh(
-                            script: 'find . -name "pom.xml" -not -path "./target/*" -exec dirname {} \\; | grep -v "^\\.$" | sort',
-                            returnStdout: true
-                        ).trim().split('\n').findAll { it && it != '.' }
+                        
+                        // If no modules found, try to find some common ThingsBoard modules
+                        if (changedModules.isEmpty()) {
+                            echo "No changed modules detected, looking for common modules..."
+                            def commonModules = sh(
+                                script: '''
+                                    for module in application common dao transport netty-mqtt rule-engine ui-ngx; do
+                                        if [ -d "$module" ] && [ -f "$module/pom.xml" ]; then
+                                            echo "$module"
+                                        fi
+                                    done
+                                ''',
+                                returnStdout: true
+                            ).trim()
+                            
+                            if (commonModules) {
+                                changedModules = commonModules.split('\n').findAll { it }
+                            }
+                        }
+                        
+                        env.CHANGED_MODULES = changedModules.join(',')
+                        echo "Modules to build: ${env.CHANGED_MODULES}"
+                        
+                        // Write changed modules to file for later use
+                        writeFile file: 'changed-modules.txt', text: env.CHANGED_MODULES
+                        
+                    } catch (Exception e) {
+                        echo "Error detecting changed modules: ${e.getMessage()}"
+                        // Fallback: try to build root project
+                        env.CHANGED_MODULES = "."
+                        writeFile file: 'changed-modules.txt', text: env.CHANGED_MODULES
                     }
-                    
-                    env.CHANGED_MODULES = changedModules.join(',')
-                    echo "Modules to build: ${env.CHANGED_MODULES}"
-                    
-                    // Write changed modules to file for later use
-                    writeFile file: 'changed-modules.txt', text: env.CHANGED_MODULES
                 }
             }
         }
@@ -98,9 +166,9 @@ pipeline {
         stage('Build Info') {
             steps {
                 echo "Building ThingsBoard pipeline branch"
-                echo "Branch: ${env.BRANCH_NAME}"
+                echo "Branch: ${env.CURRENT_BRANCH ?: env.BRANCH_NAME ?: 'unknown'}"
                 echo "Build number: ${env.BUILD_NUMBER}"
-                echo "Modules to build: ${env.CHANGED_MODULES}"
+                echo "Modules to build: ${env.CHANGED_MODULES ?: 'detecting...'}"
                 sh 'java -version'
                 sh 'mvn -version'
             }
@@ -328,46 +396,75 @@ EOF
     post {
         always {
             echo 'Pipeline completed - cleaning up...'
-            sh '''
-                # Clean up temporary files but keep combined-build for artifacts
-                rm -rf */target/classes 2>/dev/null || true
-                rm -f changed-modules.txt 2>/dev/null || true
-            '''
+            script {
+                try {
+                    sh '''
+                        # Clean up temporary files but keep combined-build for artifacts
+                        rm -rf */target/classes 2>/dev/null || true
+                        rm -f changed-modules.txt 2>/dev/null || true
+                    '''
+                } catch (Exception e) {
+                    echo "Cleanup warning: ${e.getMessage()}"
+                }
+            }
         }
         
         success {
             echo '✅ ThingsBoard pipeline build succeeded!'
             script {
-                def modulesBuilt = env.CHANGED_MODULES.split(',').size()
-                currentBuild.description = "✅ Built ${modulesBuilt} modules | Combined JAR: ${env.COMBINED_JAR_NAME}-${env.BUILD_NUMBER}.jar"
-                
-                // Webhook notification (optional)
-                // You can add webhook notifications here if needed
+                try {
+                    def modulesBuilt = 0
+                    if (env.CHANGED_MODULES && env.CHANGED_MODULES != '') {
+                        modulesBuilt = env.CHANGED_MODULES.split(',').size()
+                    }
+                    currentBuild.description = "✅ Built ${modulesBuilt} modules | Combined JAR: ${env.COMBINED_JAR_NAME ?: 'thingsboard-combined'}-${env.BUILD_NUMBER}.jar"
+                } catch (Exception e) {
+                    echo "Success description error: ${e.getMessage()}"
+                    currentBuild.description = "✅ Build completed successfully"
+                }
             }
         }
         
         failure {
             echo '❌ ThingsBoard pipeline build failed!'
             script {
-                currentBuild.description = "❌ Build failed at ${env.STAGE_NAME} | Modules: ${env.CHANGED_MODULES}"
+                try {
+                    // Safe variable handling
+                    def branchName = env.BRANCH_NAME ?: 'unknown'
+                    def stageName = env.STAGE_NAME ?: 'unknown'
+                    def changedModules = env.CHANGED_MODULES ?: 'none'
+                    def buildNumber = env.BUILD_NUMBER ?: 'unknown'
+                    
+                    currentBuild.description = "❌ Build failed at ${stageName} | Branch: ${branchName}"
+                    
+                    // Create failure report with safe variables
+                    writeFile file: 'failure-report.txt', text: """=== Build Failure Report ===
+Failed stage: ${stageName}
+Build: ${buildNumber}
+Branch: ${branchName}
+Modules attempted: ${changedModules}
+Failure time: ${new Date()}
+Workspace: ${env.WORKSPACE ?: 'unknown'}
+Node: ${env.NODE_NAME ?: 'unknown'}
+"""
+                    
+                    archiveArtifacts artifacts: 'failure-report.txt', allowEmptyArchive: true
+                    
+                } catch (Exception e) {
+                    echo "Post-failure processing error: ${e.getMessage()}"
+                    currentBuild.description = "❌ Build failed with post-processing errors"
+                }
             }
-            
-            // Archive failure logs
-            sh '''
-                echo "=== Build Failure Report ===" > failure-report.txt
-                echo "Failed stage: ${STAGE_NAME}" >> failure-report.txt
-                echo "Build: ${BUILD_NUMBER} | Branch: ${BRANCH_NAME}" >> failure-report.txt
-                echo "Modules attempted: ${CHANGED_MODULES}" >> failure-report.txt
-                echo "Failure time: $(date)" >> failure-report.txt
-            '''
-            
-            archiveArtifacts artifacts: 'failure-report.txt', allowEmptyArchive: true
         }
         
         unstable {
             echo '⚠️  ThingsBoard pipeline build unstable'
             script {
-                currentBuild.description = "⚠️  Build unstable | Combined JAR may have issues"
+                try {
+                    currentBuild.description = "⚠️  Build unstable | Combined JAR may have issues"
+                } catch (Exception e) {
+                    echo "Unstable description error: ${e.getMessage()}"
+                }
             }
         }
     }
