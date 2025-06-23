@@ -1576,4 +1576,52 @@ While opening file "Jenkinsfile"
          [m[m
          stage('Production Clean & Prepare') {[m[m
              steps {[m[m
-[1mdiff --git a/application/src/main/java/org/thingsboard/serv
+[1mdiff --git a/application/src/main/java/org/thingsboard/server/ThingsboardInstallApplication.java b/application/src/main/java/org/thingsboard/server/ThingsboardInstallApplication.java[m[m
+[1mindex 31b220569f..c0bdb7a328 100644[m[m
+[1m--- a/application/src/main/java/org/thingsboard/server/ThingsboardInstallApplication.java[m[m
+[1m+++ b/application/src/main/java/org/thingsboard/server/ThingsboardInstallApplication.java[m[m
+[36m@@ -13,6 +13,7 @@[m[m
+  * See the License for the specific language governing permissions and[m[m
+  * limitations under the License.[m[m
+  */[m[m
+[32m+[m[32m// Updated for incremental build test - 2025-06-23[m[m
+ package org.thingsboard.server;[m[m
+ [m[m
+ import lombok.extern.slf4j.Slf4j;[m[m
+[1mdiff --git a/{ b/{[m[m
+[1mindex 1f799148e9..487abf2718 100644[m[m
+[1m--- a/{[m[m
+[1m+++ b/{[m[m
+[36m@@ -1031,4 +1031,503 @@[m [mWhile opening file "Jenkinsfile"[m[m
+ echo '🔐Running production security validations...'-Dmaven.test.skip=true \187,71-69     37%0-6869-678-667-656-645-634-623-612-601-590-5859-578-567-556-545-534-523-512-501-490-4849-478-467[m :[K[K[?1l>]0;nethmi@server1:~/Projects/thingsboard[?2004h[nethmi@server1 thingsboard]$ 
+[?2004l]0;nethmi@server1:~/Projects/thingsboard[?2004h[nethmi@server1 thingsboard]$ 
+[?2004l]0;nethmi@server1:~/Projects/thingsboard[?2004h[nethmi@server1 thingsboard]$ 
+[?2004l]0;nethmi@server1:~/Projects/thingsboard[?2004h[nethmi@server1 thingsboard]$ 
+[?2004l]0;nethmi@server1:~/Projects/thingsboard[?2004h[nethmi@server1 thingsboard]$ 
+[?2004l]0;nethmi@server1:~/Projects/thingsboard[?2004h[nethmi@server1 thingsboard]$ 
+[?2004l]0;nethmi@server1:~/Projects/thingsboard[?2004h[nethmi@server1 thingsboard]$ 
+[?2004l]0;nethmi@server1:~/Projects/thingsboard[?2004h[nethmi@server1 thingsboard]$ 
+[?2004l]0;nethmi@server1:~/Projects/thingsboard[?2004h[nethmi@server1 thingsboard]$ 
+[?2004l]0;nethmi@server1:~/Projects/thingsboard[?2004h[nethmi@server1 thingsboard]$ 
+[?2004l]0;nethmi@server1:~/Projects/thingsboard[?2004h[nethmi@server1 thingsboard]$ 
+[?2004l]0;nethmi@server1:~/Projects/thingsboard[?2004h[nethmi@server1 thingsboard]$ 
+[?2004l]0;nethmi@server1:~/Projects/thingsboard[?2004h[nethmi@server1 thingsboard]$ 
+[?2004l]0;nethmi@server1:~/Projects/thingsboard[?2004h[nethmi@server1 thingsboard]$ 
+[?2004l]0;nethmi@server1:~/Projects/thingsboard[?2004h[nethmi@server1 thingsboard]$ 
+[?2004l]0;nethmi@server1:~/Projects/thingsboard[?2004h[nethmi@server1 thingsboard]$ 
+[?2004l]0;nethmi@server1:~/Projects/thingsboard[?2004h[nethmi@server1 thingsboard]$ 
+[?2004l]0;nethmi@server1:~/Projects/thingsboard[?2004h[nethmi@server1 thingsboard]$ 
+[?2004l]0;nethmi@server1:~/Projects/thingsboard[?2004h[nethmi@server1 thingsboard]$ 
+[?2004l]0;nethmi@server1:~/Projects/thingsboard[?2004h[nethmi@server1 thingsboard]$ 
+[?2004l]0;nethmi@server1:~/Projects/thingsboard[?2004h[nethmi@server1 thingsboard]$ 
+[?2004l]0;nethmi@server1:~/Projects/thingsboard[?2004h[nethmi@server1 thingsboard]$ git add .
+[?2004l]0;nethmi@server1:~/Projects/thingsboard[?2004h[nethmi@server1 thingsboard]$ [7mgit commit -m "Test incremental build - update application module"[27m
+[A[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[Cgit commit -m "Test incremental build - update application module"
+[A
+[?2004l[production b85a3106c2] Test incremental build - update application module
+ 3 files changed, 565 insertions(+), 2 deletions(-)
+]0;nethmi@server1:~/Projects/thingsboard[?2004h[nethmi@server1 thingsboard]$ [7mgit push origin master[27m
+[A[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[Cgit push origin master
+[K[A[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[K[K[K[K[K[Kproduction
+[?2004lUsername for 'https://github.com': Nethnissanka
+Password for 'https://Nethn
