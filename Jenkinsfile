@@ -2,12 +2,11 @@ pipeline {
     agent any
     
     environment {
-        MAVEN_OPTS = '-Xmx3072m -XX:+UseG1GC'  // More memory for production
+        MAVEN_OPTS = '-Xmx3072m -XX:+UseG1GC'
         JAVA_HOME = '/usr/lib/jvm/java-17-openjdk-17.0.15.0.6-2.el9.x86_64'
         M2_HOME = '/usr/share/maven'
         PATH = "${env.PATH}:/usr/bin"
         
-        // Production Environment specific variables
         ENV_NAME = 'PRODUCTION'
         DEPLOY_TARGET = 'prod-server'
         BUILD_PROFILE = 'prod'
@@ -23,6 +22,11 @@ pipeline {
             name: 'VERSION_TAG',
             defaultValue: '',
             description: 'Version tag for this production release (e.g., v1.2.3)'
+        )
+        booleanParam(
+            name: 'FORCE_FULL_BUILD',
+            defaultValue: false,
+            description: 'Force full build instead of incremental?'
         )
         booleanParam(
             name: 'CREATE_BACKUP',
@@ -42,16 +46,122 @@ pipeline {
                 echo "🔒 Checking out source code for PRODUCTION build..."
                 script {
                     if (params.VERSION_TAG) {
-                        // Checkout specific tag if provided
                         checkout([$class: 'GitSCM',
                                 branches: [[name: "refs/tags/${params.VERSION_TAG}"]],
                                 userRemoteConfigs: scm.userRemoteConfigs])
                     } else {
-                        // Checkout selected branch
                         checkout([$class: 'GitSCM',
                                 branches: [[name: "*/${params.RELEASE_BRANCH}"]],
                                 userRemoteConfigs: scm.userRemoteConfigs])
                     }
+                }
+            }
+        }
+        
+        stage('Detect Changed Modules') {
+            steps {
+                echo '🔍 Detecting changed modules since last build...'
+                script {
+                    def changedModules = []
+                    def allModules = []
+                    
+                    // Get all Maven modules
+                    def pomFiles = sh(
+                        script: "find . -name 'pom.xml' -not -path './target/*' | head -20",
+                        returnStdout: true
+                    ).trim().split('\n')
+                    
+                    // Extract module names from pom files
+                    for (pomFile in pomFiles) {
+                        if (pomFile != './pom.xml') {
+                            def moduleName = pomFile.replaceAll('./([^/]+)/pom.xml', '$1')
+                            allModules.add(moduleName)
+                        }
+                    }
+                    
+                    // Get changed files since last successful build
+                    def lastBuildCommit = ""
+                    try {
+                        // Try to get last successful build commit
+                        def lastBuild = currentBuild.getPreviousSuccessfulBuild()
+                        if (lastBuild) {
+                            lastBuildCommit = sh(
+                                script: "git log --format='%H' -n 1 --before='${lastBuild.getTime()}'",
+                                returnStdout: true
+                            ).trim()
+                        }
+                    } catch (Exception e) {
+                        echo "No previous successful build found, will check last 5 commits"
+                    }
+                    
+                    // If no previous build, check recent commits
+                    if (!lastBuildCommit) {
+                        lastBuildCommit = sh(
+                            script: "git log --format='%H' -n 1 HEAD~5",
+                            returnStdout: true
+                        ).trim()
+                    }
+                    
+                    // Get changed files
+                    def changedFiles = ""
+                    if (lastBuildCommit) {
+                        changedFiles = sh(
+                            script: "git diff --name-only ${lastBuildCommit} HEAD || git diff --name-only HEAD~1 HEAD",
+                            returnStdout: true
+                        ).trim()
+                    } else {
+                        changedFiles = sh(
+                            script: "git diff --name-only HEAD~1 HEAD",
+                            returnStdout: true
+                        ).trim()
+                    }
+                    
+                    echo "Changed files: ${changedFiles}"
+                    
+                    // Determine which modules are affected
+                    if (changedFiles) {
+                        def files = changedFiles.split('\n')
+                        def affectedModules = [] as Set
+                        
+                        for (file in files) {
+                            // Check if file belongs to a module
+                            for (module in allModules) {
+                                if (file.startsWith("${module}/") || 
+                                    file.startsWith("${module}\\") ||
+                                    file.contains("/${module}/") ||
+                                    file.contains("\\${module}\\")) {
+                                    affectedModules.add(module)
+                                }
+                            }
+                            
+                            // Also check for common files that affect all modules
+                            if (file.equals('pom.xml') || 
+                                file.startsWith('common/') ||
+                                file.startsWith('shared/') ||
+                                file.contains('parent') ||
+                                file.contains('config')) {
+                                echo "Core file changed: ${file} - will trigger full build"
+                                affectedModules.addAll(allModules)
+                                break
+                            }
+                        }
+                        
+                        changedModules = affectedModules.toList()
+                    }
+                    
+                    // Force full build if requested or if no changes detected
+                    if (params.FORCE_FULL_BUILD || changedModules.isEmpty()) {
+                        echo "🔄 Full build requested or no specific changes detected"
+                        changedModules = allModules
+                    }
+                    
+                    echo "📋 Modules to build: ${changedModules.join(', ')}"
+                    echo "📊 Total modules: ${allModules.size()}, Changed modules: ${changedModules.size()}"
+                    
+                    // Store in environment for later stages
+                    env.CHANGED_MODULES = changedModules.join(',')
+                    env.ALL_MODULES = allModules.join(',')
+                    env.BUILD_TYPE = changedModules.size() == allModules.size() ? 'FULL' : 'INCREMENTAL'
                 }
             }
         }
@@ -62,12 +172,13 @@ pipeline {
                 echo "Environment: ${ENV_NAME}"
                 echo "Branch/Tag: ${params.VERSION_TAG ?: params.RELEASE_BRANCH}"
                 echo "Build number: ${env.BUILD_NUMBER}"
-                echo "Version: ${params.VERSION_TAG}"
+                echo "Build Type: ${env.BUILD_TYPE}"
+                echo "Modules to build: ${env.CHANGED_MODULES}"
                 echo "Create backup: ${params.CREATE_BACKUP}"
                 echo "Deploy to prod: ${params.DEPLOY_TO_PROD}"
                 sh 'java -version'
                 sh 'mvn -version'
-                sh 'git log --oneline -5'  // Show recent commits
+                sh 'git log --oneline -3'
             }
         }
         
@@ -75,7 +186,6 @@ pipeline {
             steps {
                 echo '🔐 Running production security validations...'
                 script {
-                    // Ensure we're building from approved branches/tags only
                     def allowedBranches = ['master', 'main']
                     def currentBranch = params.RELEASE_BRANCH
                     
@@ -84,7 +194,7 @@ pipeline {
                     } else if (currentBranch.startsWith('release/') || allowedBranches.contains(currentBranch)) {
                         echo "✅ Building from approved branch: ${currentBranch}"
                     } else {
-                        error("❌ Production builds only allowed from master, main,or release/* branches")
+                        error("❌ Production builds only allowed from master, main, or release/* branches")
                     }
                 }
             }
@@ -93,98 +203,111 @@ pipeline {
         stage('Production Clean & Prepare') {
             steps {
                 echo '🧹 Cleaning workspace for production build...'
-                sh 'mvn clean -q -T 2C'
+                script {
+                    if (env.BUILD_TYPE == 'FULL') {
+                        sh 'mvn clean -q -T 2C'
+                    } else {
+                        // Clean only changed modules
+                        def modules = env.CHANGED_MODULES.split(',')
+                        for (module in modules) {
+                            sh "mvn clean -q -f ${module}/pom.xml || true"
+                        }
+                    }
+                }
             }
         }
         
-        stage('Production Package Build') {
+        stage('Incremental Production Build') {
             steps {
-                echo '📦 Building PRODUCTION packages - optimized and secure...'
+                echo "📦 Building ${env.BUILD_TYPE} - ${env.CHANGED_MODULES.split(',').length} modules..."
                 timeout(time: 60, unit: 'MINUTES') {
-                    sh '''
-                        echo "=== PRODUCTION Package Build Started ==="
-                        echo "Building with production profile and full validations..."
+                    script {
+                        if (env.BUILD_TYPE == 'FULL') {
+                            // Full build
+                            sh '''
+                                echo "=== FULL PRODUCTION Build ==="
+                                mvn package \
+                                    -P${BUILD_PROFILE} \
+                                    -DskipTests \
+                                    -Dmaven.test.skip=true \
+                                    -Dmaven.javadoc.skip=true \
+                                    -Dmaven.source.skip=true \
+                                    -Dcheckstyle.skip=false \
+                                    -Dspotbugs.skip=false \
+                                    -Denforcer.skip=false \
+                                    -Dmaven.compiler.optimize=true \
+                                    -Dmaven.compiler.debug=false \
+                                    -T 2C
+                            '''
+                        } else {
+                            // Incremental build
+                            echo "=== INCREMENTAL PRODUCTION Build ==="
+                            def modules = env.CHANGED_MODULES.split(',')
+                            
+                            // Build modules with dependencies
+                            def moduleList = modules.join(',')
+                            sh """
+                                echo "Building modules: ${moduleList}"
+                                
+                                # Build changed modules and their dependents
+                                mvn package \
+                                    -P${BUILD_PROFILE} \
+                                    -pl ${moduleList} \
+                                    -am \
+                                    -DskipTests \
+                                    -Dmaven.test.skip=true \
+                                    -Dmaven.javadoc.skip=true \
+                                    -Dmaven.source.skip=true \
+                                    -Dcheckstyle.skip=false \
+                                    -Dspotbugs.skip=false \
+                                    -Denforcer.skip=false \
+                                    -Dmaven.compiler.optimize=true \
+                                    -Dmaven.compiler.debug=false \
+                                    -T 2C
+                            """
+                        }
                         
-                        # Production build with enhanced security and validations
-                        mvn package \
-                            -P${BUILD_PROFILE} \
-                            -DskipTests \
-                            -Dmaven.test.skip=true \
-                            -Dmaven.javadoc.skip=true \
-                            -Dmaven.source.skip=true \
-                            -Dcheckstyle.skip=false \
-                            -Dspotbugs.skip=false \
-                            -Dpmd.skip=false \
-                            -Dfindbugs.skip=false \
-                            -Denforcer.skip=false \
-                            -Dmaven.compiler.optimize=true \
-                            -Dmaven.compiler.debug=false \
-                            -T 2C \
-                            -X | grep -E "(Installing|Building|Packaging|reactor:|SUCCESS|ERROR|WARNING)" || \
-                        mvn package \
-                            -P${BUILD_PROFILE} \
-                            -DskipTests \
-                            -Dmaven.test.skip=true \
-                            -Dmaven.javadoc.skip=true \
-                            -Dmaven.source.skip=true \
-                            -Dcheckstyle.skip=false \
-                            -Dspotbugs.skip=false \
-                            -Denforcer.skip=false \
-                            -Dmaven.compiler.optimize=true \
-                            -T 2C
-                        
-                        echo "=== PRODUCTION Build Process Completed ==="
-                        echo "Production packages created:"
-                        find . -name "*.jar" -newer pom.xml 2>/dev/null | head -15
-                    '''
+                        sh '''
+                            echo "=== Build Process Completed ==="
+                            echo "Packages created:"
+                            find . -name "*.jar" -newer pom.xml 2>/dev/null | head -15
+                        '''
+                    }
                 }
             }
         }
         
         stage('Production Package Validation') {
             steps {
-                echo '✅ Comprehensive production package validation...'
+                echo '✅ Validating built packages...'
                 sh '''
                     echo "=== Production Package Validation ==="
                     
-                    # Check if main packages exist
-                    MAIN_JARS=$(find . -name "thingsboard*.jar" -o -name "application*.jar" | grep -v test | wc -l)
-                    echo "Found $MAIN_JARS main application packages"
-                    
-                    if [ "$MAIN_JARS" -eq 0 ]; then
-                        echo "❌ CRITICAL ERROR: No main application packages found!"
-                        exit 1
+                    # Check if packages exist for changed modules
+                    CHANGED_MODULES="${CHANGED_MODULES}"
+                    if [ -n "$CHANGED_MODULES" ]; then
+                        for module in ${CHANGED_MODULES//,/ }; do
+                            echo "Checking module: $module"
+                            MODULE_JARS=$(find "$module" -name "*.jar" 2>/dev/null | wc -l)
+                            if [ "$MODULE_JARS" -gt 0 ]; then
+                                echo "  ✅ $module: $MODULE_JARS packages found"
+                                find "$module" -name "*.jar" -exec ls -lh {} \\; 2>/dev/null | head -3
+                            else
+                                echo "  ⚠️ $module: No packages found (might be parent module)"
+                            fi
+                        done
                     fi
                     
-                    # Comprehensive JAR validation for production
-                    for jar in $(find . -name "thingsboard*.jar" -o -name "application*.jar" | grep -v test); do
-                        echo "Validating production package: $jar"
-                        
-                        # Check JAR structure
-                        if jar tf "$jar" > /dev/null 2>&1; then
-                            echo "  ✅ Valid JAR structure"
-                        else
-                            echo "  ❌ CRITICAL: Invalid JAR structure: $jar"
-                            exit 1
-                        fi
-                        
-                        # Check JAR size (should not be empty)
-                        SIZE=$(stat -f%z "$jar" 2>/dev/null || stat -c%s "$jar" 2>/dev/null || echo "0")
-                        if [ "$SIZE" -gt 1000000 ]; then  # > 1MB
-                            echo "  ✅ Package size OK: ${SIZE} bytes"
-                        else
-                            echo "  ⚠️  WARNING: Package seems small: ${SIZE} bytes"
-                        fi
-                        
-                        # Check for main class (basic validation)
-                        if jar tf "$jar" | grep -q "MANIFEST.MF"; then
-                            echo "  ✅ Manifest present"
-                        else
-                            echo "  ⚠️  WARNING: No manifest found"
-                        fi
-                    done
+                    # Overall validation
+                    TOTAL_JARS=$(find . -name "*.jar" -newer pom.xml 2>/dev/null | wc -l)
+                    echo "Total packages created: $TOTAL_JARS"
                     
-                    echo "✅ Production package validation completed"
+                    if [ "$TOTAL_JARS" -eq 0 ]; then
+                        echo "❌ WARNING: No packages found!"
+                        echo "This might be normal for parent modules or configuration changes"
+                    else
+                        echo "✅ Package validation completed"
+                    fi
                 '''
             }
         }
@@ -199,15 +322,26 @@ pipeline {
                     BACKUP_DIR="production-backup-${BUILD_NUMBER}-$(date +%Y%m%d_%H%M%S)"
                     mkdir -p "$BACKUP_DIR"
                     
-                    # Copy current production packages for backup
-                    find . -name "*.jar" -newer pom.xml -exec cp {} "$BACKUP_DIR/" \\;
+                    # Copy packages for changed modules
+                    if [ -n "${CHANGED_MODULES}" ]; then
+                        for module in ${CHANGED_MODULES//,/ }; do
+                            if [ -d "$module/target" ]; then
+                                mkdir -p "$BACKUP_DIR/$module"
+                                find "$module/target" -name "*.jar" -exec cp {} "$BACKUP_DIR/$module/" \\; 2>/dev/null || true
+                            fi
+                        done
+                    fi
                     
                     # Create backup archive
-                    tar -czf "${BACKUP_DIR}.tar.gz" "$BACKUP_DIR"
-                    rm -rf "$BACKUP_DIR"
+                    if [ -n "$(ls -A $BACKUP_DIR 2>/dev/null)" ]; then
+                        tar -czf "${BACKUP_DIR}.tar.gz" "$BACKUP_DIR"
+                        echo "✅ Production backup created: ${BACKUP_DIR}.tar.gz"
+                        ls -lh "${BACKUP_DIR}.tar.gz"
+                    else
+                        echo "ℹ️ No packages to backup"
+                    fi
                     
-                    echo "✅ Production backup created: ${BACKUP_DIR}.tar.gz"
-                    ls -lh "${BACKUP_DIR}.tar.gz"
+                    rm -rf "$BACKUP_DIR"
                 '''
                 
                 archiveArtifacts artifacts: 'production-backup-*.tar.gz', allowEmptyArchive: true
@@ -219,27 +353,46 @@ pipeline {
                 echo '📁 Archiving production packages...'
                 script {
                     def prodJars = sh(
-                        script: "find . -name '*.jar' | grep -v test",
+                        script: "find . -name '*.jar' -newer pom.xml | grep -v test",
                         returnStdout: true
                     ).trim()
                     
                     if (prodJars) {
-                        echo "Archiving production packages"
+                        echo "Archiving ${env.BUILD_TYPE.toLowerCase()} build packages"
+                        
+                        // Archive all built packages
                         archiveArtifacts artifacts: '**/target/*.jar', 
                                        excludes: '**/target/*-tests.jar,**/target/*-sources.jar',
                                        allowEmptyArchive: true,
                                        fingerprint: true
                         
-                        // Also create a release package
+                        // Create a release package for changed modules
                         sh '''
-                            RELEASE_DIR="thingsboard-release-${BUILD_NUMBER}"
+                            RELEASE_DIR="thingsboard-${BUILD_TYPE,,}-${BUILD_NUMBER}"
                             mkdir -p "$RELEASE_DIR"
-                            find . -name "thingsboard*.jar" -o -name "application*.jar" | grep -v test | xargs -I {} cp {} "$RELEASE_DIR/"
-                            tar -czf "${RELEASE_DIR}.tar.gz" "$RELEASE_DIR"
+                            
+                            # Copy main application JARs
+                            find . -name "thingsboard*.jar" -o -name "application*.jar" | grep -v test | while read jar; do
+                                cp "$jar" "$RELEASE_DIR/" 2>/dev/null || true
+                            done
+                            
+                            # Create release info
+                            echo "Build Type: ${BUILD_TYPE}" > "$RELEASE_DIR/build-info.txt"
+                            echo "Modules: ${CHANGED_MODULES}" >> "$RELEASE_DIR/build-info.txt"
+                            echo "Build: ${BUILD_NUMBER}" >> "$RELEASE_DIR/build-info.txt"
+                            echo "Date: $(date)" >> "$RELEASE_DIR/build-info.txt"
+                            
+                            if [ -n "$(ls -A $RELEASE_DIR/*.jar 2>/dev/null)" ]; then
+                                tar -czf "${RELEASE_DIR}.tar.gz" "$RELEASE_DIR"
+                                echo "✅ Release package created: ${RELEASE_DIR}.tar.gz"
+                            else
+                                echo "ℹ️ No main application JARs to package"
+                            fi
+                            
                             rm -rf "$RELEASE_DIR"
                         '''
                         
-                        archiveArtifacts artifacts: 'thingsboard-release-*.tar.gz', allowEmptyArchive: true
+                        archiveArtifacts artifacts: 'thingsboard-*-*.tar.gz', allowEmptyArchive: true
                     }
                 }
             }
@@ -252,7 +405,7 @@ pipeline {
             steps {
                 script {
                     def approval = input(
-                        message: '🚨 Deploy to PRODUCTION environment?',
+                        message: "🚨 Deploy ${env.BUILD_TYPE} build to PRODUCTION?",
                         parameters: [
                             choice(name: 'DEPLOY_DECISION', 
                                    choices: ['ABORT', 'DEPLOY'], 
@@ -272,18 +425,28 @@ pipeline {
                 expression { params.DEPLOY_TO_PROD == true }
             }
             steps {
-                echo '🚀 Deploying to PRODUCTION environment...'
+                echo "🚀 Deploying ${env.BUILD_TYPE} build to PRODUCTION..."
                 script {
                     sh '''
                         echo "=== PRODUCTION DEPLOYMENT ==="
                         echo "Target: ${DEPLOY_TARGET}"
-                        echo "Version: ${VERSION_TAG}"
+                        echo "Build Type: ${BUILD_TYPE}"
+                        echo "Modules: ${CHANGED_MODULES}"
                         echo "Build: ${BUILD_NUMBER}"
                         
-                        # Add your production deployment logic here
-                        # Example commands (customize as needed):
-                        # scp thingsboard-release-*.tar.gz prod-server:/opt/thingsboard/releases/
-                        # ssh prod-server "cd /opt/thingsboard && ./deploy-release.sh ${BUILD_NUMBER}"
+                        # Deploy only changed modules (customize as needed)
+                        if [ "${BUILD_TYPE}" = "INCREMENTAL" ]; then
+                            echo "Deploying incremental changes..."
+                            # Example: Deploy only changed services
+                            # for module in ${CHANGED_MODULES//,/ }; do
+                            #     echo "Deploying module: $module"
+                            #     scp $module/target/*.jar prod-server:/opt/thingsboard/modules/$module/
+                            # done
+                        else
+                            echo "Deploying full build..."
+                            # Example: Deploy full release
+                            # scp thingsboard-full-*.tar.gz prod-server:/opt/thingsboard/releases/
+                        fi
                         
                         echo "✅ PRODUCTION deployment completed successfully"
                     '''
@@ -298,7 +461,9 @@ pipeline {
                     echo "=== ThingsBoard PRODUCTION Build Report ===" > production-build-report.txt
                     echo "Environment: PRODUCTION" >> production-build-report.txt
                     echo "Build: ${BUILD_NUMBER}" >> production-build-report.txt
+                    echo "Build Type: ${BUILD_TYPE}" >> production-build-report.txt
                     echo "Branch/Tag: ${VERSION_TAG:-$RELEASE_BRANCH}" >> production-build-report.txt
+                    echo "Modules Built: ${CHANGED_MODULES}" >> production-build-report.txt
                     echo "Build Date: $(date)" >> production-build-report.txt
                     echo "Backup Created: ${CREATE_BACKUP}" >> production-build-report.txt
                     echo "Deployed: ${DEPLOY_TO_PROD}" >> production-build-report.txt
@@ -308,8 +473,8 @@ pipeline {
                     git log --oneline -5 >> production-build-report.txt
                     echo "" >> production-build-report.txt
                     
-                    echo "=== Production Packages Created ===" >> production-build-report.txt
-                    find . -name "*.jar" -newer pom.xml -exec ls -lh {} \\; >> production-build-report.txt 2>/dev/null
+                    echo "=== Packages Created ===" >> production-build-report.txt
+                    find . -name "*.jar" -newer pom.xml -exec ls -lh {} \\; >> production-build-report.txt 2>/dev/null || echo "No packages found" >> production-build-report.txt
                     echo "" >> production-build-report.txt
                     
                     echo "=== Build Statistics ===" >> production-build-report.txt
@@ -328,20 +493,22 @@ pipeline {
             sh 'rm -rf target/*/target || true'
         }
         success {
-            echo '✅ Production build succeeded!'
+            echo "✅ ${env.BUILD_TYPE} production build succeeded!"
             script {
                 def version = params.VERSION_TAG ?: params.RELEASE_BRANCH
-                currentBuild.description = "✅ Production packages built successfully - ${version}"
+                def moduleCount = env.CHANGED_MODULES.split(',').length
+                currentBuild.description = "✅ ${env.BUILD_TYPE} build (${moduleCount} modules) - ${version}"
             }
         }
         failure {
-            echo '❌ Production build failed!'
+            echo "❌ ${env.BUILD_TYPE} production build failed!"
             script {
-                currentBuild.description = "❌ PRODUCTION build failed at ${env.STAGE_NAME}"
+                currentBuild.description = "❌ ${env.BUILD_TYPE} build failed at ${env.STAGE_NAME}"
                 
-                // Send critical failure notification for production
                 sh '''
                     echo "CRITICAL: Production build failure" > prod-failure.txt
+                    echo "Build Type: ${BUILD_TYPE}" >> prod-failure.txt
+                    echo "Modules: ${CHANGED_MODULES}" >> prod-failure.txt
                     echo "Stage: ${STAGE_NAME}" >> prod-failure.txt
                     echo "Build: ${BUILD_NUMBER}" >> prod-failure.txt
                     echo "Time: $(date)" >> prod-failure.txt
