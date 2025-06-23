@@ -15,7 +15,7 @@ pipeline {
     parameters {
         choice(
             name: 'RELEASE_BRANCH',
-            choices: ['master', 'release/*'],
+            choices: ['feature/*','master' ],
             description: 'Select release branch for production build'
         )
         string(
