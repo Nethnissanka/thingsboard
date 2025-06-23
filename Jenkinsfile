@@ -12,6 +12,12 @@ pipeline {
         COMBINED_JAR_NAME = 'thingsboard-combined'
         BUILD_PROFILE = 'fast-build'
     }
+
+     triggers {
+        // Webhook trigger for the pipeline branch
+        githubPush()
+    }
+    
     stages {
         stage('Validate Branch') {
             steps {
