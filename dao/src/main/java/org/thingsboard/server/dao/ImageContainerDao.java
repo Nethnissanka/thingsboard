@@ -13,6 +13,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
+//comment
 package org.thingsboard.server.dao;
 
 import org.thingsboard.server.common.data.id.HasId;
