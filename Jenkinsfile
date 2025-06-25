@@ -9,12 +9,10 @@ pipeline {
         
         // Pipeline specific settings
         TARGET_BRANCH = 'pipeline'
-        COMBINED_JAR_NAME = 'thingsboard-combined'
         BUILD_PROFILE = 'fast-build'
     }
-    
+
     triggers {
-        // Webhook trigger for the pipeline branch
         githubPush()
     }
     
@@ -22,10 +20,8 @@ pipeline {
         stage('Validate Branch') {
             steps {
                 script {
-                    // Get branch name from multiple sources
                     def branchName = env.BRANCH_NAME ?: env.GIT_BRANCH ?: ''
                     
-                    // If still empty, try to get from git
                     if (!branchName || branchName == '') {
                         try {
                             branchName = sh(
@@ -38,18 +34,14 @@ pipeline {
                         }
                     }
                     
-                    // Remove origin/ prefix if present
                     if (branchName.startsWith('origin/')) {
                         branchName = branchName.substring(7)
                     }
                     
-                    // Set the branch name for use in other stages
                     env.CURRENT_BRANCH = branchName
-                    
                     echo "Detected branch: ${branchName}"
                     echo "Target branch: ${TARGET_BRANCH}"
                     
-                    // Only enforce branch restriction if we can determine the branch
                     if (branchName != 'unknown' && branchName != TARGET_BRANCH) {
                         echo "⚠️  Warning: Pipeline designed for '${TARGET_BRANCH}' branch, but running on '${branchName}'"
                         echo "Continuing with build..."
@@ -64,7 +56,6 @@ pipeline {
                 checkout scm
                 
                 script {
-                    // Store commit info for change detection
                     env.CURRENT_COMMIT = sh(
                         script: 'git rev-parse HEAD',
                         returnStdout: true
@@ -98,73 +89,46 @@ pipeline {
                             
                             echo "Changed files: ${changedFiles.join(', ')}"
                             
-                            // Find affected modules
+                            // Find affected modules based on your structure
                             def moduleSet = [] as Set
+                            def knownModules = ['application', 'common', 'dao', 'edqs', 'monitoring', 'netty-mqtt', 
+                                             'packaging', 'rest-client', 'rule-engine', 'tools', 'transport', 'ui-ngx', 'msa']
+                            
                             changedFiles.each { file ->
                                 def parts = file.split('/')
-                                if (parts.length > 1) {
-                                    // Check if directory has pom.xml
-                                    def pomPath = "${parts[0]}/pom.xml"
-                                    def pomExists = sh(
-                                        script: "test -f '${pomPath}' && echo 'true' || echo 'false'",
-                                        returnStdout: true
-                                    ).trim() == 'true'
-                                    
-                                    if (pomExists) {
-                                        moduleSet.add(parts[0])
+                                if (parts.length > 0) {
+                                    def potentialModule = parts[0]
+                                    // Check if it's a known module and has pom.xml
+                                    if (knownModules.contains(potentialModule)) {
+                                        def pomExists = sh(
+                                            script: "test -f '${potentialModule}/pom.xml' && echo 'true' || echo 'false'",
+                                            returnStdout: true
+                                        ).trim() == 'true'
+                                        
+                                        if (pomExists) {
+                                            moduleSet.add(potentialModule)
+                                        }
                                     }
                                 }
                             }
                             changedModules = moduleSet as List
                         } else {
-                            echo "Initial build - finding all modules"
-                            def allModules = sh(
-                                script: 'find . -name "pom.xml" -not -path "./target/*" -exec dirname {} \\; | grep -v "^\\.$" | sed "s|^\\./||" | sort',
-                                returnStdout: true
-                            ).trim()
-                            
-                            if (allModules) {
-                                changedModules = allModules.split('\n').findAll { it && it != '.' }
-                            }
+                            echo "Initial build - will build all modules via root pom"
+                            changedModules = ['root'] // Special marker for full build
                         }
                         
-                        // // If no modules found, try to find some common ThingsBoard modules
-                        // if (changedModules.isEmpty()) {
-                        //     echo "No changed modules detected, looking for common modules..."
-                        //     def commonModules = sh(
-                        //         script: '''
-                        //             for module in application common dao transport netty-mqtt rule-engine ui-ngx; do
-                        //                 if [ -d "$module" ] && [ -f "$module/pom.xml" ]; then
-                        //                     echo "$module"
-                        //                 fi
-                        //             done
-                        //         ''',
-                        //         returnStdout: true
-                        //     ).trim()
-                            
-                        //     if (commonModules) {
-                        //         changedModules = commonModules.split('\n').findAll { it }
-                        //     }
-                        // }
-
-
                         if (changedModules.isEmpty()) {
-                        echo "⏭️ No changed modules detected. Skipping build."
-                        currentBuild.result = 'NOT_BUILT'
-                        error("Build skipped due to no changes")  // This stops the pipeline gracefully
-}
+                            echo "❌ No changed modules detected. Skipping build to save resources."
+                            currentBuild.result = 'NOT_BUILT'
+                            return
+                        }
                         
                         env.CHANGED_MODULES = changedModules.join(',')
-                        echo "Modules to build: ${env.CHANGED_MODULES}"
-                        
-                        // Write changed modules to file for later use
-                        writeFile file: 'changed-modules.txt', text: env.CHANGED_MODULES
+                        echo "Modules that changed: ${env.CHANGED_MODULES}"
                         
                     } catch (Exception e) {
                         echo "Error detecting changed modules: ${e.getMessage()}"
-                        // Fallback: try to build root project
-                        env.CHANGED_MODULES = "."
-                        writeFile file: 'changed-modules.txt', text: env.CHANGED_MODULES
+                        env.CHANGED_MODULES = "root"
                     }
                 }
             }
@@ -172,58 +136,60 @@ pipeline {
         
         stage('Build Info') {
             steps {
-                echo "Building ThingsBoard pipeline branch"
+                echo "Building ThingsBoard multi-module project"
                 echo "Branch: ${env.CURRENT_BRANCH ?: env.BRANCH_NAME ?: 'unknown'}"
                 echo "Build number: ${env.BUILD_NUMBER}"
-                echo "Modules to build: ${env.CHANGED_MODULES ?: 'detecting...'}"
+                echo "Changed modules: ${env.CHANGED_MODULES ?: 'detecting...'}"
                 sh 'java -version'
                 sh 'mvn -version'
+                sh 'ls -la'  // Show project structure
             }
         }
         
-        stage('Clean & Prepare') {
+        stage('Clean Changed Modules') {
             steps {
-                echo 'Cleaning previous builds...'
+                echo 'Cleaning only changed modules...'
                 sh '''
-                    # Clean only changed modules to save time
-                    if [ -n "$CHANGED_MODULES" ]; then
+                    echo "=== Cleaning Changed Modules ==="
+                    
+                    if [ "$CHANGED_MODULES" = "root" ]; then
+                        echo "Full build - cleaning root"
+                        mvn clean -q
+                    else
+                        # Clean only changed modules
                         for module in $(echo $CHANGED_MODULES | tr ',' ' '); do
-                            if [ -d "$module" ]; then
+                            if [ -d "$module" ] && [ -f "$module/pom.xml" ]; then
                                 echo "Cleaning module: $module"
                                 cd "$module" && mvn clean -q && cd ..
                             fi
                         done
                     fi
-                    
-                    # Clean combined jar directory
-                    rm -rf combined-build
-                    mkdir -p combined-build/libs
                 '''
             }
         }
         
         stage('Build Changed Modules') {
-    when {
-        expression { 
-            // Only run if CHANGED_MODULES is non-empty
-            return env.CHANGED_MODULES?.trim() 
-        }
-    }
-    steps {
-        echo 'Building only changed modules...'
-        timeout(time: 45, unit: 'MINUTES') {
-            script {
-                if (env.CHANGED_MODULES?.trim()) {
+            when {
+                expression { env.CHANGED_MODULES != '' && env.CHANGED_MODULES != 'root' }
+            }
+            steps {
+                echo 'Building only changed modules (incremental)...'
+                timeout(time: 30, unit: 'MINUTES') {
                     sh '''
-                        echo "=== Building Changed Modules ==="
+                        echo "=== Incremental Build: Changed Modules Only ==="
+                        
+                        # Build changed modules using Maven reactor
                         MODULE_LIST=""
                         for module in $(echo $CHANGED_MODULES | tr ',' ' '); do
                             if [ -d "$module" ] && [ -f "$module/pom.xml" ]; then
                                 MODULE_LIST="$MODULE_LIST -pl $module"
                             fi
                         done
-
+                        
+                        echo "Maven reactor modules: $MODULE_LIST"
+                        
                         if [ -n "$MODULE_LIST" ]; then
+                            # Build changed modules with dependencies
                             mvn compile package \
                                 $MODULE_LIST \
                                 -am \
@@ -238,163 +204,219 @@ pipeline {
                                 -Denforcer.skip=true \
                                 -T 2C \
                                 -q
+                            
+                            echo "✅ Changed modules built successfully"
                         else
-                            echo "No valid modules to build (skipping)"
+                            echo "❌ No valid modules to build"
+                            exit 1
                         fi
                     '''
-                } else {
-                    echo "No changed modules detected (skipping build)"
                 }
             }
         }
-    }
-}
         
-        stage('Collect & Combine JARs') {
+        stage('Build Complete Application') {
             steps {
-                echo 'Collecting built JARs and creating combined package...'
-                script {
+                echo 'Building complete ThingsBoard application from root pom.xml...'
+                timeout(time: 45, unit: 'MINUTES') {
                     sh '''
-                        echo "=== Collecting JAR files ==="
+                        echo "=== Building Complete Application ==="
+                        echo "Running: mvn clean package from root directory"
                         
-                        # Find all newly built JAR files from changed modules
-                        JAR_COUNT=0
-                        for module in $(echo $CHANGED_MODULES | tr ',' ' '); do
-                            if [ -d "$module/target" ]; then
-                                echo "Collecting JARs from module: $module"
-                                find "$module/target" -name "*.jar" -not -name "*-tests.jar" -not -name "*-sources.jar" -not -name "*-javadoc.jar" | while read jar; do
-                                    if [ -f "$jar" ]; then
-                                        cp "$jar" combined-build/libs/
-                                        echo "Copied: $(basename $jar)"
-                                        JAR_COUNT=$((JAR_COUNT + 1))
-                                    fi
-                                done
-                            fi
-                        done
+                        # Build the complete application using root pom.xml
+                        mvn clean package \
+                            -DskipTests \
+                            -Dmaven.test.skip=true \
+                            -Dmaven.javadoc.skip=true \
+                            -Dmaven.source.skip=true \
+                            -Dcheckstyle.skip=true \
+                            -Dspotbugs.skip=true \
+                            -Dpmd.skip=true \
+                            -Dfindbugs.skip=true \
+                            -Denforcer.skip=true \
+                            -T 2C
                         
-                        echo "Total JARs collected: $(ls combined-build/libs/ | wc -l)"
-                        ls -la combined-build/libs/
+                        echo "✅ Complete application built successfully"
                         
-                        # Create combined JAR with all dependencies
-                        echo "=== Creating Combined JAR ==="
-                        cd combined-build
+                        # Show what was built
+                        echo "=== Built Artifacts ==="
+                        find . -name "*.jar" -not -path "./.*" -not -name "*-tests.jar" -not -name "*-sources.jar" | head -20
                         
-                        # Create manifest
-                        cat > MANIFEST.MF << EOF
-Manifest-Version: 1.0
-Main-Class: org.thingsboard.server.ThingsboardServerApplication
-Implementation-Title: ThingsBoard Combined
-Implementation-Version: ${BUILD_NUMBER}
-Built-By: Jenkins Pipeline
-Build-Branch: ${BRANCH_NAME}
-Build-Time: $(date)
-EOF
-                        
-                        # Extract all JARs and combine
-                        mkdir -p extracted
-                        for jar in libs/*.jar; do
-                            if [ -f "$jar" ]; then
-                                echo "Extracting: $(basename $jar)"
-                                cd extracted
-                                jar -xf "../$jar"
-                                cd ..
-                            fi
-                        done
-                        
-                        # Remove conflicting files
-                        find extracted -name "META-INF/*.SF" -delete 2>/dev/null || true
-                        find extracted -name "META-INF/*.DSA" -delete 2>/dev/null || true
-                        find extracted -name "META-INF/*.RSA" -delete 2>/dev/null || true
-                        
-                        # Create final combined JAR
-                        cd extracted
-                        jar -cfm "../${COMBINED_JAR_NAME}-${BUILD_NUMBER}.jar" ../MANIFEST.MF *
-                        cd ..
-                        
-                        echo "Combined JAR created: ${COMBINED_JAR_NAME}-${BUILD_NUMBER}.jar"
-                        ls -lh "${COMBINED_JAR_NAME}-${BUILD_NUMBER}.jar"
-                        
-                        # Verify JAR
-                        jar -tf "${COMBINED_JAR_NAME}-${BUILD_NUMBER}.jar" | head -10
+                        # Find main application JAR
+                        MAIN_JAR=$(find . -name "*application*.jar" -not -name "*-tests.jar" | head -1)
+                        if [ -n "$MAIN_JAR" ]; then
+                            echo "Main application JAR: $MAIN_JAR"
+                            ls -lh "$MAIN_JAR"
+                        fi
                     '''
                 }
             }
         }
         
-        stage('Test Combined JAR') {
+        stage('Run ThingsBoard Application') {
             steps {
-                echo 'Testing combined JAR integrity...'
-                sh '''
-                    cd combined-build
-                    
-                    # Test JAR file integrity
-                    echo "Testing JAR integrity..."
-                    jar -tf "${COMBINED_JAR_NAME}-${BUILD_NUMBER}.jar" > /dev/null
-                    
-                    if [ $? -eq 0 ]; then
-                        echo "✅ JAR integrity test passed"
-                    else
-                        echo "❌ JAR integrity test failed"
-                        exit 1
-                    fi
-                    
-                    # Check main class exists
-                    if jar -tf "${COMBINED_JAR_NAME}-${BUILD_NUMBER}.jar" | grep -q "org/thingsboard/server/ThingsboardServerApplication.class"; then
-                        echo "✅ Main class found in combined JAR"
-                    else
-                        echo "⚠️  Main class not found - JAR may not be executable"
-                    fi
-                    
-                    # Show JAR details
-                    echo "=== Combined JAR Details ==="
-                    echo "Size: $(ls -lh ${COMBINED_JAR_NAME}-${BUILD_NUMBER}.jar | awk '{print $5}')"
-                    echo "Classes: $(jar -tf ${COMBINED_JAR_NAME}-${BUILD_NUMBER}.jar | grep '\\.class$' | wc -l)"
-                    echo "Resources: $(jar -tf ${COMBINED_JAR_NAME}-${BUILD_NUMBER}.jar | grep -v '\\.class$' | wc -l)"
-                '''
+                echo 'Starting ThingsBoard application...'
+                script {
+                    sh '''
+                        echo "=== Starting ThingsBoard Application ==="
+                        
+                        # Find the main application JAR
+                        MAIN_JAR=$(find . -name "*application*.jar" -not -name "*-tests.jar" | head -1)
+                        
+                        if [ -z "$MAIN_JAR" ]; then
+                            echo "❌ Main application JAR not found!"
+                            echo "Available JARs:"
+                            find . -name "*.jar" | grep -v test | head -10
+                            exit 1
+                        fi
+                        
+                        echo "Found main JAR: $MAIN_JAR"
+                        
+                        # Create logs directory
+                        mkdir -p logs
+                        
+                        # Start application (you may need to adjust these settings)
+                        echo "Starting ThingsBoard application..."
+                        nohup java -Xmx2048m \
+                            -XX:+UseG1GC \
+                            -Dspring.profiles.active=dev \
+                            -Dlogging.config=classpath:logback.xml \
+                            -jar "$MAIN_JAR" \
+                            > logs/thingsboard-${BUILD_NUMBER}.log 2>&1 &
+                        
+                        APP_PID=$!
+                        echo $APP_PID > app.pid
+                        echo "Application started with PID: $APP_PID"
+                        
+                        # Wait for application to start
+                        echo "Waiting for application to start..."
+                        TIMEOUT=180  # 3 minutes timeout
+                        COUNTER=0
+                        
+                        while [ $COUNTER -lt $TIMEOUT ]; do
+                            # Check if process is still running
+                            if ! ps -p $APP_PID > /dev/null 2>&1; then
+                                echo "❌ Application process died!"
+                                echo "=== Application Logs ==="
+                                tail -50 logs/thingsboard-${BUILD_NUMBER}.log
+                                exit 1
+                            fi
+                            
+                            # Check if application is responding
+                            if curl -s -f http://localhost:8080 > /dev/null 2>&1; then
+                                echo "✅ ThingsBoard application is running and responding!"
+                                break
+                            elif curl -s http://localhost:8080 2>/dev/null | grep -q "ThingsBoard\\|login\\|dashboard"; then
+                                echo "✅ ThingsBoard application is running!"
+                                break
+                            else
+                                echo "⏳ Waiting for application... ($COUNTER/$TIMEOUT seconds)"
+                                sleep 10
+                                COUNTER=$((COUNTER + 10))
+                            fi
+                        done
+                        
+                        if [ $COUNTER -ge $TIMEOUT ]; then
+                            echo "❌ Application failed to start within timeout"
+                            echo "=== Application Logs ==="
+                            tail -100 logs/thingsboard-${BUILD_NUMBER}.log
+                            exit 1
+                        fi
+                        
+                        # Show application status
+                        echo "=== Application Status ==="
+                        echo "PID: $APP_PID"
+                        echo "Port: $(netstat -tlnp | grep :8080 || echo 'Not found')"
+                        echo "Memory: $(ps -o %mem= -p $APP_PID 2>/dev/null || echo 'Unknown')%"
+                        
+                        # Show recent logs
+                        echo "=== Recent Application Logs ==="
+                        tail -20 logs/thingsboard-${BUILD_NUMBER}.log
+                    '''
+                }
             }
         }
         
-        stage('Archive Artifacts') {
+        stage('Application Health Check') {
             steps {
-                echo 'Archiving combined JAR and build reports...'
+                echo 'Testing ThingsBoard application...'
                 script {
-                    // Archive the combined JAR
-                    archiveArtifacts artifacts: "combined-build/${env.COMBINED_JAR_NAME}-${env.BUILD_NUMBER}.jar",
+                    sh '''
+                        echo "=== ThingsBoard Health Check ==="
+                        
+                        # Test HTTP endpoint
+                        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080 || echo "000")
+                        echo "HTTP Response Code: $HTTP_CODE"
+                        
+                        if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "302" ]; then
+                            echo "✅ HTTP endpoint responding correctly"
+                        else
+                            echo "⚠️  HTTP endpoint returned: $HTTP_CODE"
+                        fi
+                        
+                        # Test specific ThingsBoard endpoints
+                        if curl -s http://localhost:8080/login 2>/dev/null | grep -q "ThingsBoard"; then
+                            echo "✅ ThingsBoard login page accessible"
+                        fi
+                        
+                        # Check for errors in logs
+                        ERROR_COUNT=$(grep -c "ERROR\\|Exception" logs/thingsboard-${BUILD_NUMBER}.log 2>/dev/null || echo "0")
+                        if [ "$ERROR_COUNT" -gt 0 ]; then
+                            echo "⚠️  Found $ERROR_COUNT errors in logs"
+                            echo "Recent errors:"
+                            grep "ERROR\\|Exception" logs/thingsboard-${BUILD_NUMBER}.log | tail -5
+                        else
+                            echo "✅ No critical errors found in logs"
+                        fi
+                        
+                        echo "=== Build Summary ==="
+                        echo "Changed modules: $CHANGED_MODULES"
+                        echo "Application URL: http://localhost:8080"
+                        echo "Build completed: $(date)"
+                    '''
+                }
+            }
+        }
+        
+        stage('Archive Results') {
+            steps {
+                echo 'Archiving build artifacts and logs...'
+                script {
+                    // Archive main application JAR
+                    sh 'find . -name "*application*.jar" -not -name "*-tests.jar" -exec cp {} thingsboard-app-${BUILD_NUMBER}.jar \\;'
+                    
+                    archiveArtifacts artifacts: 'thingsboard-app-*.jar',
                                    fingerprint: true,
                                    allowEmptyArchive: false
                     
-                    // Archive individual module JARs
-                    archiveArtifacts artifacts: 'combined-build/libs/*.jar',
-                                   fingerprint: true,
+                    // Archive application logs
+                    archiveArtifacts artifacts: 'logs/thingsboard-*.log',
                                    allowEmptyArchive: true
                     
                     // Create build report
                     sh '''
-                        echo "=== ThingsBoard Pipeline Build Report ===" > pipeline-build-report.txt
-                        echo "Build: ${BUILD_NUMBER} | Branch: ${BRANCH_NAME}" >> pipeline-build-report.txt
-                        echo "Commit: ${CURRENT_COMMIT}" >> pipeline-build-report.txt
-                        echo "Date: $(date)" >> pipeline-build-report.txt
-                        echo "" >> pipeline-build-report.txt
-                        
-                        echo "=== Changed Modules ===" >> pipeline-build-report.txt
-                        echo "${CHANGED_MODULES}" | tr ',' '\\n' >> pipeline-build-report.txt
-                        echo "" >> pipeline-build-report.txt
-                        
-                        echo "=== Built Artifacts ===" >> pipeline-build-report.txt
-                        ls -la combined-build/libs/ >> pipeline-build-report.txt
-                        echo "" >> pipeline-build-report.txt
-                        
-                        echo "=== Combined JAR ===" >> pipeline-build-report.txt
-                        ls -lh combined-build/${COMBINED_JAR_NAME}-${BUILD_NUMBER}.jar >> pipeline-build-report.txt
-                        echo "" >> pipeline-build-report.txt
-                        
-                        echo "=== Build Performance ===" >> pipeline-build-report.txt
-                        echo "Total modules in project: $(find . -name pom.xml -not -path './target/*' | wc -l)" >> pipeline-build-report.txt
-                        echo "Modules built: $(echo ${CHANGED_MODULES} | tr ',' '\\n' | wc -l)" >> pipeline-build-report.txt
-                        echo "Build completed at: $(date)" >> pipeline-build-report.txt
+                        cat > build-report-${BUILD_NUMBER}.txt << EOF
+=== ThingsBoard Build Report ===
+Build: ${BUILD_NUMBER}
+Branch: ${BRANCH_NAME}
+Commit: ${CURRENT_COMMIT}
+Date: $(date)
+
+=== Changed Modules ===
+${CHANGED_MODULES}
+
+=== Application Status ===
+Main JAR: $(find . -name "*application*.jar" -not -name "*-tests.jar" | head -1)
+PID: $(cat app.pid 2>/dev/null || echo "Not running")
+URL: http://localhost:8080
+
+=== Build Performance ===
+Total modules: $(find . -name pom.xml | wc -l)
+Changed modules: $(echo ${CHANGED_MODULES} | tr ',' '\\n' | wc -l)
+EOF
                     '''
                     
-                    archiveArtifacts artifacts: 'pipeline-build-report.txt, changed-modules.txt',
+                    archiveArtifacts artifacts: 'build-report-*.txt',
                                    allowEmptyArchive: true
                 }
             }
@@ -403,13 +425,27 @@ EOF
     
     post {
         always {
-            echo 'Pipeline completed - cleaning up...'
+            echo 'Cleaning up...'
             script {
                 try {
                     sh '''
-                        # Clean up temporary files but keep combined-build for artifacts
-                        rm -rf */target/classes 2>/dev/null || true
-                        rm -f changed-modules.txt 2>/dev/null || true
+                        # Stop application if running
+                        if [ -f "app.pid" ]; then
+                            APP_PID=$(cat app.pid)
+                            if ps -p $APP_PID > /dev/null 2>&1; then
+                                echo "Stopping ThingsBoard application (PID: $APP_PID)..."
+                                kill $APP_PID
+                                sleep 10
+                                # Force kill if still running
+                                if ps -p $APP_PID > /dev/null 2>&1; then
+                                    kill -9 $APP_PID
+                                fi
+                                echo "Application stopped"
+                            fi
+                        fi
+                        
+                        # Clean up build artifacts but keep logs
+                        find . -name "target" -type d -exec rm -rf {} + 2>/dev/null || true
                     '''
                 } catch (Exception e) {
                     echo "Cleanup warning: ${e.getMessage()}"
@@ -418,60 +454,29 @@ EOF
         }
         
         success {
-            echo '✅ ThingsBoard pipeline build succeeded!'
+            echo '✅ ThingsBoard build and deployment succeeded!'
             script {
                 try {
                     def modulesBuilt = 0
                     if (env.CHANGED_MODULES && env.CHANGED_MODULES != '') {
                         modulesBuilt = env.CHANGED_MODULES.split(',').size()
                     }
-                    currentBuild.description = "✅ Built ${modulesBuilt} modules | Combined JAR: ${env.COMBINED_JAR_NAME ?: 'thingsboard-combined'}-${env.BUILD_NUMBER}.jar"
+                    currentBuild.description = "✅ Built ${modulesBuilt} modules | ThingsBoard running: http://localhost:8080"
                 } catch (Exception e) {
-                    echo "Success description error: ${e.getMessage()}"
-                    currentBuild.description = "✅ Build completed successfully"
+                    currentBuild.description = "✅ ThingsBoard build and deployment completed"
                 }
             }
         }
         
         failure {
-            echo '❌ ThingsBoard pipeline build failed!'
+            echo '❌ ThingsBoard build failed!'
             script {
                 try {
-                    // Safe variable handling
                     def branchName = env.BRANCH_NAME ?: 'unknown'
                     def stageName = env.STAGE_NAME ?: 'unknown'
-                    def changedModules = env.CHANGED_MODULES ?: 'none'
-                    def buildNumber = env.BUILD_NUMBER ?: 'unknown'
-                    
-                    currentBuild.description = "❌ Build failed at ${stageName} | Branch: ${branchName}"
-                    
-                    // Create failure report with safe variables
-                    writeFile file: 'failure-report.txt', text: """=== Build Failure Report ===
-Failed stage: ${stageName}
-Build: ${buildNumber}
-Branch: ${branchName}
-Modules attempted: ${changedModules}
-Failure time: ${new Date()}
-Workspace: ${env.WORKSPACE ?: 'unknown'}
-Node: ${env.NODE_NAME ?: 'unknown'}
-"""
-                    
-                    archiveArtifacts artifacts: 'failure-report.txt', allowEmptyArchive: true
-                    
+                    currentBuild.description = "❌ Build failed at ${stageName}"
                 } catch (Exception e) {
-                    echo "Post-failure processing error: ${e.getMessage()}"
-                    currentBuild.description = "❌ Build failed with post-processing errors"
-                }
-            }
-        }
-        
-        unstable {
-            echo '⚠️  ThingsBoard pipeline build unstable'
-            script {
-                try {
-                    currentBuild.description = "⚠️  Build unstable | Combined JAR may have issues"
-                } catch (Exception e) {
-                    echo "Unstable description error: ${e.getMessage()}"
+                    currentBuild.description = "❌ Build failed"
                 }
             }
         }
