@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 //comments new
+//new
 package org.thingsboard.server.dao;
 
 import org.thingsboard.server.common.data.id.HasId;
