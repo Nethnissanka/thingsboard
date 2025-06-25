@@ -12,8 +12,8 @@ pipeline {
         COMBINED_JAR_NAME = 'thingsboard-combined'
         BUILD_PROFILE = 'fast-build'
     }
-
-     triggers {
+    
+    triggers {
         // Webhook trigger for the pipeline branch
         githubPush()
     }
@@ -149,9 +149,9 @@ pipeline {
 
 
                         if (changedModules.isEmpty()) {
-    echo "❌ No changed modules detected. Skipping build to save resources."
-    currentBuild.result = 'NOT_BUILT'
-    return
+                        echo "⏭️ No changed modules detected. Skipping build."
+                        currentBuild.result = 'NOT_BUILT'
+                        error("Build skipped due to no changes")  // This stops the pipeline gracefully
 }
                         
                         env.CHANGED_MODULES = changedModules.join(',')
@@ -203,27 +203,27 @@ pipeline {
         }
         
         stage('Build Changed Modules') {
-            when {
-                expression { env.CHANGED_MODULES != '' }
-            }
-            steps {
-                echo 'Building only changed modules...'
-                timeout(time: 45, unit: 'MINUTES') {
+    when {
+        expression { 
+            // Only run if CHANGED_MODULES is non-empty
+            return env.CHANGED_MODULES?.trim() 
+        }
+    }
+    steps {
+        echo 'Building only changed modules...'
+        timeout(time: 45, unit: 'MINUTES') {
+            script {
+                if (env.CHANGED_MODULES?.trim()) {
                     sh '''
                         echo "=== Building Changed Modules ==="
-                        
-                        # Create module list for Maven reactor
                         MODULE_LIST=""
                         for module in $(echo $CHANGED_MODULES | tr ',' ' '); do
                             if [ -d "$module" ] && [ -f "$module/pom.xml" ]; then
                                 MODULE_LIST="$MODULE_LIST -pl $module"
                             fi
                         done
-                        
-                        echo "Maven module list: $MODULE_LIST"
-                        
+
                         if [ -n "$MODULE_LIST" ]; then
-                            # Build changed modules with dependencies
                             mvn compile package \
                                 $MODULE_LIST \
                                 -am \
@@ -239,15 +239,16 @@ pipeline {
                                 -T 2C \
                                 -q
                         else
-                            echo "No valid modules to build"
-                            exit 1
+                            echo "No valid modules to build (skipping)"
                         fi
-                        
-                        echo "=== Module Build Completed ==="
                     '''
+                } else {
+                    echo "No changed modules detected (skipping build)"
                 }
             }
         }
+    }
+}
         
         stage('Collect & Combine JARs') {
             steps {
