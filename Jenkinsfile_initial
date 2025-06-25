@@ -1,0 +1,36 @@
+/* Jenkinsfile_initial
+   -------------------------------------------------------
+   Purpose: Run once after cloning the repo to populate
+            the agent’s ~/.m2/repository with *all* modules.
+--------------------------------------------------------*/
+
+pipeline {
+    agent any
+
+    environment {
+        //MAVEN_OPTS = '-Xmx2048m'
+        MAVEN_OPTS = '-Xmx3072m -XX:+UseG1GC -XX:+UseStringDeduplication'
+        JAVA_HOME = '/usr/lib/jvm/java-17-openjdk-17.0.15.0.6-2.el9.x86_64'
+        M2_HOME = '/usr/share/maven'
+        PATH = "${env.PATH}:/usr/bin"
+    }
+
+    stages {
+        stage('Checkout') {
+            steps { checkout scm }
+        }
+
+        stage('Full Clean Install') {
+            steps {
+                echo '🏗️  Performing full clean install for ALL modules...'
+                sh 'mvn clean install -DskipTests'
+            }
+        }
+    }
+
+    post {
+        success {
+            echo '✅ Initial full build completed – Maven cache primed.'
+        }
+    }
+}
