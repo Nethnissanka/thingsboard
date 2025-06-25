@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-// test comment to check pipeline in jenkins
+
 package org.thingsboard.server.dao;
 
 import org.thingsboard.server.common.data.id.TenantId;
