@@ -15,7 +15,8 @@
  */
 
 // test
-// new testing jenkins pipeline
+// new testing jenkins pipelin
+// add new testing 1:wqe
 package org.thingsboard.server.dao;
 
 import java.util.UUID;
