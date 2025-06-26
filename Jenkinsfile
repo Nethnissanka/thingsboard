@@ -311,38 +311,7 @@ pipeline {
             }
         }
 
-    /* ------------------------------------------------------------------ */
-    /* 🔟  Start application                                             */
-    /* ------------------------------------------------------------------ */
-        stage('Start Application') {
-            when {
-                expression { env.APP_RUNNING != 'true' }
-            }
-            steps {
-                echo '🚀 Starting ThingsBoard application…'
-                timeout(time: 5, unit: 'MINUTES') {
-                    sh '''
-                        cd ${THINGSBOARD_HOME}
-                        
-                        # Find the application JAR
-                        APP_JAR=$(find . -name "thingsboard-*.jar" -not -path "./application/target/*" | head -1)
-                        if [ -z "$APP_JAR" ]; then
-                            APP_JAR=$(find application/target -name "thingsboard-*.jar" | head -1)
-                        fi
-                        
-                        if [ -z "$APP_JAR" ]; then
-                            echo "❌ No application JAR found"
-                            exit 1
-                        fi
-                        
-                        echo "Starting application: $APP_JAR"
-                        nohup java -jar "$APP_JAR" > ${THINGSBOARD_LOG_FILE} 2>&1 &
-                        echo $! > ${THINGSBOARD_PID_FILE}
-                        echo "✅ Application started with PID: $(cat ${THINGSBOARD_PID_FILE})"
-                    '''
-                }
-            }
-        }
+    
 
     /* ------------------------------------------------------------------ */
     /* 1️⃣1️⃣  Health check                                               */
