@@ -14,9 +14,6 @@
  * limitations under the License.
  */
 
-// new testing
-//new comment new
-//new nw
 package org.thingsboard.server;
 
 import lombok.extern.slf4j.Slf4j;
