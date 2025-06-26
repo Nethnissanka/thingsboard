@@ -157,28 +157,31 @@ pipeline {
     /* ------------------------------------------------------------------ */
         stage('Check Running Application') {
             steps {
+                echo 'Checking if ThingsBoard is currently running...'
                 script {
-                    env.APP_RUNNING = sh(
+                    def isRunning = sh(
                         script: '''
-                               if curl -s -f http://localhost:${THINGSBOARD_PORT}/api/noauth/healthcheck >/dev/null 2>&1; then
-                                   echo true
-                               elif [ -f "${THINGSBOARD_PID_FILE}" ] && ps -p $(cat ${THINGSBOARD_PID_FILE}) >/dev/null 2>&1; then
-                                   echo true
-                               else echo false; fi
-                        ''', returnStdout: true).trim()
-
-                    if (env.APP_RUNNING == 'true') {
-                        echo '✅ Application is running – will hot‑deploy.'
-                        // Backup current application before hot deploy
-                        sh '''
-                            if [ -f "${THINGSBOARD_HOME}/application/target/thingsboard-*.jar" ]; then
-                                cp "${THINGSBOARD_HOME}/application/target/thingsboard-"*.jar "${BACKUP_DIR}/thingsboard-backup-$(date +%Y%m%d_%H%M%S).jar"
-                                echo "📦 Created backup of current application"
+                            # Check if application is running on port 8080
+                            if curl -s -f http://localhost:${THINGSBOARD_PORT} > /dev/null 2>&1; then
+                                echo "true"
+                            elif [ -f "${THINGSBOARD_PID_FILE}" ] && ps -p $(cat ${THINGSBOARD_PID_FILE}) > /dev/null 2>&1; then
+                                echo "true"
+                            else
+                                echo "false"
                             fi
-                        '''
+                        ''',
+                        returnStdout: true
+                    ).trim()
+                    
+                    env.APP_RUNNING = isRunning
+                    
+                    if (isRunning == "true") {
+                        echo "✅ ThingsBoard application is currently running"
+                        echo "Will perform hot deployment of changed modules"
                     } else {
-                        echo '⚠️ Application is not running – will do full build.'
-                        env.CHANGED_MODULES = 'full-build'
+                        echo "⚠️  ThingsBoard application is not running"
+                        echo "Will perform full build and start application"
+                        env.CHANGED_MODULES = "full-build"
                     }
                 }
             }
