@@ -466,6 +466,7 @@ pipeline {
         }
         
         cleanup {
+            echo 'Performing cleanup tasks...'
             // Clean up workspace if needed
             // cleanWs()
         }
